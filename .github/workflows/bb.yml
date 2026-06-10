@@ -1,8 +1,8 @@
 name: Build iStoreOS Rootfs for DroidSpaces
 on:
-  workflow_dispatch: # 手动触发构建
+  workflow_dispatch:
   schedule:
-    - cron: '0 0 * * 0' # 每周日自动构建
+    - cron: '0 0 * * 0'
 
 env:
   TARGET_ARCH: arm64
@@ -67,7 +67,7 @@ jobs:
 
           sudo mkdir -p ${{ env.WORK_DIR }}/rootfs/root/.ssh
           sudo tee ${{ env.WORK_DIR }}/rootfs/root/.ssh/authorized_keys > /dev/null << EOF
-          # 在此替换为你的 SSH 公钥
+          # 在此填入你的SSH公钥
           EOF
           sudo chmod 700 ${{ env.WORK_DIR }}/rootfs/root/.ssh
           sudo chmod 600 ${{ env.WORK_DIR }}/rootfs/root/.ssh/authorized_keys
@@ -85,7 +85,6 @@ jobs:
                    -zcvf ../${{ env.ROOTFS_NAME }} .
           sudo chown $USER:$USER ../${{ env.ROOTFS_NAME }}
 
-      # 已修复：使用 upload-artifact@v4 替代 v3
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
