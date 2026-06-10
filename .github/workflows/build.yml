@@ -57,12 +57,18 @@ jobs:
         sudo apt clean
         sudo timedatectl set-timezone "$TZ"
 
-    # 修复：prefix 指向当前仓库根目录，取消/workdir 避免路径错误
-    - name: Build Cache
-      uses: stupidloud/cachewrtbuild@main
+    # 替换为 GitHub 原生缓存，替代第三方 cachewrtbuild
+    - name: Cache OpenWrt build files
+      uses: actions/cache@v4
       with:
-        ccache: 'true'
-        prefix: ${{ github.workspace }}
+        path: |
+          openwrt/.ccache
+          openwrt/dl
+          openwrt/build_dir
+          openwrt/staging_dir
+        key: ${{ runner.os }}-istoreos-${{ github.sha }}
+        restore-keys: |
+          ${{ runner.os }}-istoreos-
 
     - name: Time Record
       id: date
@@ -70,7 +76,6 @@ jobs:
         echo "START_SECONDS=$(date +%s)" >> $GITHUB_ENV
         echo "FILE_TIME=$(date +"%Y%m%d-%H%M")" >> $GITHUB_ENV
 
-    # 修复：直接拉取到当前工作区，不再使用 /workdir + 软链
     - name: Clone OpenWrt Source
       run: |
         git clone --depth 1 $REPO_URL -b $REPO_BRANCH openwrt
