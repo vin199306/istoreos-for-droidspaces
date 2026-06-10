@@ -24,7 +24,7 @@ jobs:
 
       - name: Set environment variables
         run: |
-          echo "IMG_URL=https://fw20.koolcenter.com/iStoreOS/armsr/istoreos-24.10.7-2026060510-armsr-squashfs-combined-efi.img.gz" >> $GITHUB_ENV
+          echo "IMG_URL=https://fw.d4ctech.com/iStoreOS/armsr/istoreos-24.10.7-2026060510-armsr-squashfs-combined-efi.img.gz" >> $GITHUB_ENV
           echo "IMG_GZ=istoreos.img.gz" >> $GITHUB_ENV
           echo "IMG_RAW=istoreos.img" >> $GITHUB_ENV
           echo "ISTORE_MNT=./istore_mnt" >> $GITHUB_ENV
