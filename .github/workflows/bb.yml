@@ -6,6 +6,7 @@ on:
 
 env:
   TARGET_ARCH: aarch64
+  QEMU_BIN: qemu-aarch64-static
   ROOTFS_NAME: istoreos-rootfs-droidspaces-${{ github.run_id }}.tar.gz
   WORK_DIR: /tmp/istoreos-build
 
@@ -13,15 +14,13 @@ jobs:
   build-rootfs:
     runs-on: ubuntu-22.04
     steps:
-      - name: 安装依赖 & 初始化 binfmt
+      - name: 安装依赖
         run: |
           sudo apt update && sudo apt install -y \
             debootstrap qemu-user-static binfmt-support \
             tar gzip rsync wget curl sudo git \
             squashfs-tools fakeroot build-essential
-          sudo update-binfmts --import qemu
-          sudo update-binfmts --enable qemu-${{ env.TARGET_ARCH }}
-          # 打印 qemu 文件列表，方便排错
+          # 查看当前 qemu 静态文件
           ls -la /usr/bin/qemu*static
 
       - name: 初始化 rootfs 目录
@@ -33,16 +32,9 @@ jobs:
             ${{ env.WORK_DIR }}/rootfs \
             http://deb.debian.org/debian
 
-      - name: 复制 QEMU 静态模拟器（多路径兼容）
+      - name: 复制 QEMU 静态二进制
         run: |
-          QEMU_BIN="qemu-${{ env.TARGET_ARCH }}-static"
-          # 优先 /usr/bin，再兜底 /usr/libexec
-          if [ -f "/usr/bin/${QEMU_BIN}" ]; then
-            sudo cp /usr/bin/${QEMU_BIN} ${{ env.WORK_DIR }}/rootfs/usr/bin/
-          elif [ -f "/usr/libexec/${QEMU_BIN}" ]; then
-            sudo cp /usr/libexec/${QEMU_BIN} ${{ env.WORK_DIR }}/rootfs/usr/bin/
-          fi
-          # 验证是否复制成功
+          sudo cp /usr/bin/${{ env.QEMU_BIN }} ${{ env.WORK_DIR }}/rootfs/usr/bin/
           ls -la ${{ env.WORK_DIR }}/rootfs/usr/bin/qemu*
           # 完成 debootstrap 第二阶段
           sudo chroot ${{ env.WORK_DIR }}/rootfs /debootstrap/debootstrap --second-stage
@@ -82,7 +74,7 @@ jobs:
 
           sudo mkdir -p ${{ env.WORK_DIR }}/rootfs/root/.ssh
           sudo tee ${{ env.WORK_DIR }}/rootfs/root/.ssh/authorized_keys > /dev/null << EOF
-          # 填入你的 SSH 公钥
+          # 在此填入你的 SSH 公钥
           EOF
           sudo chmod 700 ${{ env.WORK_DIR }}/rootfs/root/.ssh
           sudo chmod 600 ${{ env.WORK_DIR }}/rootfs/root/.ssh/authorized_keys
