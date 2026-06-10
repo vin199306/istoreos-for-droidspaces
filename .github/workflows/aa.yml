@@ -1,4 +1,4 @@
-name: Build iStoreOS arm64 rootfs for Droidspaces
+name: Build iStoreOS arm64 rootfs for Droidspaces1
 
 on:
   workflow_dispatch:
