@@ -13,14 +13,16 @@ jobs:
   build-rootfs:
     runs-on: ubuntu-22.04
     steps:
-      - name: 安装依赖 & 注册跨架构执行
+      - name: 安装依赖 & 初始化 binfmt
         run: |
           sudo apt update && sudo apt install -y \
             debootstrap qemu-user-static binfmt-support \
             tar gzip rsync wget curl sudo git \
             squashfs-tools fakeroot build-essential
-          # 强制注册 binfmt，确保跨架构可执行
+          sudo update-binfmts --import qemu
           sudo update-binfmts --enable qemu-${{ env.TARGET_ARCH }}
+          # 打印 qemu 文件列表，方便排错
+          ls -la /usr/bin/qemu*static
 
       - name: 初始化 rootfs 目录
         run: |
@@ -31,10 +33,18 @@ jobs:
             ${{ env.WORK_DIR }}/rootfs \
             http://deb.debian.org/debian
 
-      - name: 拷贝 qemu 静态二进制 + 完成引导
+      - name: 复制 QEMU 静态模拟器（多路径兼容）
         run: |
-          # 修正文件名：aarch64 而非 arm64
-          sudo cp /usr/bin/qemu-${{ env.TARGET_ARCH }}-static ${{ env.WORK_DIR }}/rootfs/usr/bin/
+          QEMU_BIN="qemu-${{ env.TARGET_ARCH }}-static"
+          # 优先 /usr/bin，再兜底 /usr/libexec
+          if [ -f "/usr/bin/${QEMU_BIN}" ]; then
+            sudo cp /usr/bin/${QEMU_BIN} ${{ env.WORK_DIR }}/rootfs/usr/bin/
+          elif [ -f "/usr/libexec/${QEMU_BIN}" ]; then
+            sudo cp /usr/libexec/${QEMU_BIN} ${{ env.WORK_DIR }}/rootfs/usr/bin/
+          fi
+          # 验证是否复制成功
+          ls -la ${{ env.WORK_DIR }}/rootfs/usr/bin/qemu*
+          # 完成 debootstrap 第二阶段
           sudo chroot ${{ env.WORK_DIR }}/rootfs /debootstrap/debootstrap --second-stage
 
       - name: 添加 iStoreOS 源 & 安装组件
