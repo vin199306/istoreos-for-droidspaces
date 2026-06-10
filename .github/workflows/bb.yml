@@ -1,0 +1,109 @@
+name: Build iStoreOS ARM64 RootFS for Droidspaces
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Build Dependencies
+        run: |
+          sudo apt update -y
+          sudo apt install -y qemu-utils gzip kpartx
+          sudo modprobe nbd max_part=16
+
+      - name: Set Env Variables
+        run: |
+          # 原项目官方镜像地址
+          echo "IMG_URL=https://dl.istoreos.com/iStoreOS/armsr/istoreos-24.10.7-2026060510-armsr-squashfs-combined-efi.img.gz" >> $GITHUB_ENV
+          echo "IMG_GZ=istoreos.img.gz" >> $GITHUB_ENV
+          echo "IMG_RAW=istoreos.img" >> $GITHUB_ENV
+          echo "SYS_MNT=./sys_mnt" >> $GITHUB_ENV
+          echo "RW_ROOT=./rootfs_work" >> $GITHUB_ENV
+          echo "OUT_TAR=rootfs.tar.gz" >> $GITHUB_ENV
+          echo "RELEASE_TAG=latest" >> $GITHUB_ENV
+
+      - name: Create Working Directories
+        run: |
+          mkdir -p ${{ env.SYS_MNT }} ${{ env.RW_ROOT }}
+
+      - name: Download iStoreOS Image (Follow iStoreOS-ARM Project)
+        run: |
+          if [ -f "${{ env.IMG_GZ }}" ]; then
+            echo "✅ Local image exists, skip download"
+          else
+            echo "🔽 Download official iStoreOS arm64 image"
+            wget -c --tries=3 --timeout=15 "${{ env.IMG_URL }}" -O "${{ env.IMG_GZ }}"
+          fi
+
+      - name: Decompress Image
+        run: |
+          zcat "${{ env.IMG_GZ }}" > "${{ env.IMG_RAW }}" || true
+
+      - name: Mount System Partition (nbd0p2 = RootFS, same as reference project)
+        run: |
+          sudo qemu-nbd -f raw -c /dev/nbd0 "${{ env.IMG_RAW }}"
+          sleep 3
+          sudo kpartx -av /dev/nbd0
+          # 根文件系统固定为 nbd0p2（参考仓库分区结构）
+          sudo mount /dev/mapper/nbd0p2 "${{ env.SYS_MNT }}"
+          echo "✅ Check /sbin/init:"
+          ls -lh "${{ env.SYS_MNT }}/sbin/init"
+
+      - name: Copy RootFS to Writable Directory
+        run: |
+          sudo cp -a "${{ env.SYS_MNT }}"/* "${{ env.RW_ROOT }}/"
+
+      - name: Fix Droidspaces Required Paths & Symlink
+        run: |
+          cd "${{ env.RW_ROOT }}"
+          # 1. 还原原生 run -> tmp/run 软链接（和原 iStoreOS 保持一致）
+          sudo mkdir -p tmp/run
+          sudo rm -f run
+          sudo ln -sf tmp/run run
+          # 2. 补齐 Droidspaces 必需目录
+          sudo mkdir -p tmp/run/droidspaces/vproc
+          # 3. 补齐环境文件
+          sudo touch tmp/run/droidspaces.env
+          # 4. 统一权限，保证容器可读写
+          sudo chmod -R 755 tmp/run
+          sudo chmod 644 tmp/run/droidspaces.env
+
+      - name: Package to Standard rootfs.tar.gz
+        run: |
+          cd "${{ env.RW_ROOT }}"
+          # 保留权限、软链接，标准 Linux rootfs 打包格式
+          sudo tar --preserve-permissions -zcvf ../${{ env.OUT_TAR }} .
+
+      - name: Cleanup Devices & Mounts
+        if: always()
+        run: |
+          sudo umount "${{ env.SYS_MNT }}" 2>/dev/null || true
+          sudo kpartx -dv /dev/nbd0 2>/dev/null || true
+          sudo qemu-nbd -d /dev/nbd0 2>/dev/null || true
+          sudo rmmod nbd 2>/dev/null || true
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: iStoreOS ARM64 RootFS (For Droidspaces)
+          body: |
+            基于 [Arthur97172/iStoreOS-ARM](https://github.com/Arthur97172/iStoreOS-ARM) 官方镜像构建
+            适配 Droidspaces v6.2.5，已补齐 /run 目录、软链接及运行依赖
+            格式：标准 rootfs.tar.gz
+          files: |
+            ./rootfs.tar.gz
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
