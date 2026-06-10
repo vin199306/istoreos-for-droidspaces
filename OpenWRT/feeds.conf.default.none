@@ -1,0 +1,10 @@
+src-git base https://git.openwrt.org/openwrt/openwrt.git;main
+src-git packages https://git.openwrt.org/feed/packages.git;main
+src-git luci https://git.openwrt.org/project/luci.git;main
+src-git routing https://git.openwrt.org/feed/routing.git;main
+src-git telephony https://git.openwrt.org/feed/telephony.git;main
+
+# iStoreOS 官方源
+src-git istore https://github.com/linkease/istore;main
+src-git nas https://github.com/linkease/nas-packages.git;master
+src-git nas_luci https://github.com/linkease/nas-packages-luci.git;main
