@@ -24,18 +24,22 @@ jobs:
           mkdir -p /opt/istoreos-work
           cd /opt/istoreos-work
 
-      - name: Download iStoreOS official arm64 image
+      - name: Download & Decompress image
         run: |
           cd /opt/istoreos-work
-          # 替换为你需要的 iStoreOS arm64 镜像直链
           IMG_URL="https://fw20.koolcenter.com/iStoreOS/armsr/istoreos-24.10.7-2026060510-armsr-squashfs-combined-efi.img.gz"
-          wget -c "${IMG_URL}" -O istoreos.img.gz
-
-      - name: Decompress image
-        run: |
-          cd /opt/istoreos-work
-          gzip -d istoreos.img.gz
-          ls -lh
+          
+          # 1. 带重试的下载（失败自动重试3次）
+          wget -c --retry-connrefused --tries=3 "${IMG_URL}" -O istoreos.img.gz.tmp
+          mv istoreos.img.gz.tmp istoreos.img.gz
+      
+          # 2. 先校验文件完整性（可选但强烈推荐）
+          # 你可以从 iStoreOS 官网找到对应镜像的 sha256sum，替换下面的字符串
+          # echo "你的sha256值  istoreos.img.gz" | sha256sum -c -
+      
+          # 3. 安全解压（即使有trailing garbage也能解压出有效部分）
+          gunzip -c istoreos.img.gz > istoreos.img
+          ls -lh istoreos.img
 
       - name: Map image to NBD device
         run: |
