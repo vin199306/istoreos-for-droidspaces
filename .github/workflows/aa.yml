@@ -1,4 +1,4 @@
-name: Build iStoreOS arm64 rootfs
+name: Build iStoreOS arm64 rootfs for Droidspaces
 
 on:
   workflow_dispatch:
@@ -11,6 +11,7 @@ jobs:
     permissions:
       contents: read
       actions: read
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -18,59 +19,69 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt update -y
-          sudo apt install -y qemu-utils gzip kpartx
+          # 新增 squashfs-tools 用于解压 root.squashfs
+          sudo apt install -y qemu-utils gzip kpartx squashfs-tools
           sudo modprobe nbd max_part=16
+
+      - name: Set env
+        run: |
+          echo "IMG_URL=https://fw20.koolcenter.com/iStoreOS/armsr/istoreos-24.10.7-2026060510-armsr-squashfs-combined-efi.img.gz" >> $GITHUB_ENV
+          echo "WORK_DIR=${{ github.workspace }}/work" >> $GITHUB_ENV
+          echo "SQUASH_MNT=${{ github.workspace }}/squash_mnt" >> $GITHUB_ENV
 
       - name: Create work dir
         run: |
-          sudo mkdir -p /opt/istoreos-work
-          cd /opt/istoreos-work
+          mkdir -p "${{ env.WORK_DIR }}"
+          mkdir -p "${{ env.SQUASH_MNT }}"
+          cd "${{ env.WORK_DIR }}"
 
-      - name: Set image URL env
-        run: |
-          echo "IMG_URL=https://fw20.koolcenter.com/iStoreOS/armsr/istoreos-24.10.7-2026060510-armsr-squashfs-combined-efi.img.gz" >> $GITHUB_ENV
-
-      # 缓存压缩包
+      # 缓存镜像压缩包
       - name: Cache image archive
         uses: actions/cache@v4
         with:
-          path: /opt/istoreos-work/istoreos.img.gz
-          key: istoreos-armsr-${{ env.IMG_URL }}
+          path: ${{ env.WORK_DIR }}/istoreos.img.gz
+          key: istoreos-armsr-${{ hashText(env.IMG_URL) }}
           restore-keys: istoreos-armsr-
 
       - name: Download image
         run: |
-          cd /opt/istoreos-work
-          if [ ! -f istoreos.img.gz ]; then
-            echo "Cache miss, downloading..."
-            wget -c --retry-connrefused --tries=3 --timeout=10 "${{ env.IMG_URL }}" -O istoreos.img.gz
+          cd "${{ env.WORK_DIR }}"
+          if [ -f "istoreos.img.gz" ]; then
+            echo "✅ 缓存命中，跳过下载"
           else
-            echo "Use cached image"
+            echo "🔽 缓存未命中，开始下载"
+            wget -c --retry-connrefused --tries=3 --timeout=10 "${{ env.IMG_URL }}" -O istoreos.img.gz
           fi
 
-      # 解压镜像
-      - name: Decompress gz image
+      - name: Decompress image
         run: |
-          cd /opt/istoreos-work
+          cd "${{ env.WORK_DIR }}"
           zcat istoreos.img.gz > istoreos.img || true
-          ls -lh istoreos.img
 
-      # 关键修复：显式指定 -f raw 格式
-      - name: Map & mount root partition
+      # 挂载磁盘分区
+      - name: Map & mount partition
         run: |
-          cd /opt/istoreos-work
-          # 增加 -f raw 声明镜像格式，消除报错
+          cd "${{ env.WORK_DIR }}"
           sudo qemu-nbd -f raw -c /dev/nbd0 istoreos.img
           sleep 2
           sudo kpartx -av /dev/nbd0
           sudo mkdir -p /mnt/istoreos
           sudo mount /dev/mapper/nbd0p1 /mnt/istoreos
 
-      # 打包 rootfs
-      - name: Package rootfs.tar.gz
+      # 关键：解压内嵌 root.squashfs
+      - name: Extract squashfs rootfs
         run: |
-          cd /mnt/istoreos
-          sudo tar czf /opt/istoreos-work/istoreos-arm64-rootfs.tar.gz \
+          cd "${{ env.WORK_DIR }}"
+          # 解压 squashfs 到独立目录
+          sudo unsquashfs -d "${{ env.SQUASH_MNT }}" /mnt/istoreos/root.squashfs
+          # 校验是否存在 /sbin/init
+          ls -lh "${{ env.SQUASH_MNT }}"/sbin/init
+
+      # 打包标准 rootfs（从 squashfs 解压目录打包）
+      - name: Package valid rootfs.tar.gz
+        run: |
+          cd "${{ env.SQUASH_MNT }}"
+          sudo tar czf "${{ env.WORK_DIR }}/istoreos-droid-rootfs.tar.gz" \
             --exclude='dev/*' \
             --exclude='proc/*' \
             --exclude='sys/*' \
@@ -78,9 +89,9 @@ jobs:
             --exclude='run/*' \
             --exclude='lost+found' \
             .
-          ls -lh /opt/istoreos-work/
+          ls -lh "${{ env.WORK_DIR }}"
 
-      # 强制清理
+      # 全局清理
       - name: Cleanup
         if: always()
         run: |
@@ -89,9 +100,9 @@ jobs:
           sudo qemu-nbd -d /dev/nbd0 2>/dev/null || true
           sudo rmmod nbd 2>/dev/null || true
 
-      - name: Upload rootfs artifact
+      - name: Upload rootfs
         uses: actions/upload-artifact@v4
         with:
-          name: istoreos-arm64-rootfs
-          path: /opt/istoreos-work/istoreos-arm64-rootfs.tar.gz
+          name: istoreos-droid-rootfs
+          path: ${{ env.WORK_DIR }}/istoreos-droid-rootfs.tar.gz
           retention-days: 30
