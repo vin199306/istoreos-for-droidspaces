@@ -1,5 +1,4 @@
 name: Build iStoreOS arm64 rootfs.img for Droidspaces
-
 on:
   workflow_dispatch:
   push:
@@ -22,66 +21,82 @@ jobs:
           sudo apt install -y qemu-utils gzip kpartx e2fsprogs
           sudo modprobe nbd max_part=16
 
-      - name: Set environment variables
+      - name: Set env
         run: |
-          echo "IMG_URL=https://fw20.koolcenter.com/iStoreOS/armsr/istoreos-24.10.7-2026060510-armsr-squashfs-combined-efi.img.gz" >> $GITHUB_ENV
+          echo "IMG_URL=https://fw.d4ctech.com/iStoreOS/armsr/istoreos-24.10.7-2026060510-armsr-squashfs-combined-efi.img.gz" >> $GITHUB_ENV
           echo "IMG_GZ=istoreos.img.gz" >> $GITHUB_ENV
           echo "IMG_RAW=istoreos.img" >> $GITHUB_ENV
-          echo "ISTORE_MNT=./istore_mnt" >> $GITHUB_ENV
+          echo "MNT_DIR=./mnt_all" >> $GITHUB_ENV
           echo "EXT4_MNT=./ext4_mnt" >> $GITHUB_ENV
           echo "OUT_IMG=./rootfs.img" >> $GITHUB_ENV
 
-      - name: Create folders
+      - name: Create dirs
         run: |
-          mkdir -p ./istore_mnt ./ext4_mnt
+          mkdir -p ./mnt_all ./ext4_mnt
 
       - name: Download image
         run: |
           if [ -f "${{ env.IMG_GZ }}" ]; then
-            echo "✅ 文件已存在，跳过下载"
+            echo "✅ File exists, skip download"
           else
-            echo "🔽 开始下载镜像"
+            echo "🔽 Downloading image..."
             wget -c --retry-connrefused --tries=3 --timeout=10 "${{ env.IMG_URL }}" -O "${{ env.IMG_GZ }}"
           fi
 
-      - name: Decompress gz to raw image
+      - name: Decompress image
         run: |
           zcat "${{ env.IMG_GZ }}" > "${{ env.IMG_RAW }}" || true
 
-      - name: Mount raw image partition
+      # 挂载整个镜像，遍历所有分区，找到包含 /sbin/init 的分区
+      - name: Scan all partitions
         run: |
           sudo qemu-nbd -f raw -c /dev/nbd0 "${{ env.IMG_RAW }}"
           sleep 3
           sudo kpartx -av /dev/nbd0
-          echo "=== 分区列表 ==="
+          echo "==== All partitions ===="
           ls -l /dev/mapper/
-          # 核心修正：挂载 nbd0p3 系统分区，而非 nbd0p1
-          sudo mount /dev/mapper/nbd0p3 "${{ env.ISTORE_MNT }}"
-          echo "=== 分区内文件列表 ==="
-          ls -la "${{ env.ISTORE_MNT }}/"
-          echo "=== 检查启动文件 /sbin/init ==="
-          ls -la "${{ env.ISTORE_MNT }}/sbin/init"
 
-      - name: Create 1.5G ext4 rootfs.img
+          # 逐个测试分区
+          for part in nbd0p1 nbd0p2 nbd0p3 nbd0p128; do
+            echo -e "\n==== Test partition: $part ===="
+            sudo mount /dev/mapper/$part "${{ env.MNT_DIR }}" 2>/dev/null
+            ls -la "${{ env.MNT_DIR }}"
+            if [ -f "${{ env.MNT_DIR }}/sbin/init" ]; then
+              echo "✅ Found valid rootfs on $part"
+              echo "TARGET_PART=$part" >> $GITHUB_ENV
+              break
+            fi
+            sudo umount "${{ env.MNT_DIR }}" 2>/dev/null
+          done
+
+          if [ -z "${{ env.TARGET_PART }}" ]; then
+            echo "❌ No valid rootfs partition found!"
+            exit 1
+          fi
+
+      # 制作 1.5G ext4 镜像
+      - name: Create ext4 rootfs.img
         run: |
           dd if=/dev/zero of="${{ env.OUT_IMG }}" bs=1M count=1536 status=none
           mkfs.ext4 -F "${{ env.OUT_IMG }}"
 
-      - name: Copy all files to ext4 image
+      # 复制系统文件到 ext4 镜像
+      - name: Copy rootfs files
         run: |
           sudo mount -o loop "${{ env.OUT_IMG }}" "${{ env.EXT4_MNT }}"
-          sudo cp -a "${{ env.ISTORE_MNT }}"/* "${{ env.EXT4_MNT }}/"
+          sudo cp -a "${{ env.MNT_DIR }}"/* "${{ env.EXT4_MNT }}/"
 
-      - name: Full cleanup
+      # 全局强制清理
+      - name: Cleanup
         if: always()
         run: |
           sudo umount "${{ env.EXT4_MNT }}" 2>/dev/null || true
-          sudo umount "${{ env.ISTORE_MNT }}" 2>/dev/null || true
+          sudo umount "${{ env.MNT_DIR }}" 2>/dev/null || true
           sudo kpartx -dv /dev/nbd0 2>/dev/null || true
           sudo qemu-nbd -d /dev/nbd0 2>/dev/null || true
           sudo rmmod nbd 2>/dev/null || true
 
-      - name: Upload rootfs.img
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: istoreos-droid-rootfs-img
