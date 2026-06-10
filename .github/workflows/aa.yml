@@ -28,7 +28,7 @@ jobs:
         run: |
           cd /opt/istoreos-work
           # 替换为你需要的 iStoreOS arm64 镜像直链
-          IMG_URL="https://fw.koolcenter.com/iStoreOS/arm64/istoreos-23.05.4-arm64-squashfs.img.gz"
+          IMG_URL="https://fw20.koolcenter.com/iStoreOS/armsr/istoreos-24.10.7-2026060510-armsr-squashfs-combined-efi.img.gz"
           wget -c "${IMG_URL}" -O istoreos.img.gz
 
       - name: Decompress image
