@@ -1,4 +1,4 @@
-name: Build iStoreOS arm64 rootfs for Droidspaces1
+name: Build iStoreOS arm64 rootfs.img for Droidspaces
 
 on:
   workflow_dispatch:
@@ -16,50 +16,50 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Install all dependencies
         run: |
           sudo apt update -y
-          # 新增 squashfs-tools 用于解压 root.squashfs
-          sudo apt install -y qemu-utils gzip kpartx squashfs-tools
+          sudo apt install -y qemu-utils gzip kpartx squashfs-tools e2fsprogs
           sudo modprobe nbd max_part=16
 
-      - name: Set env
+      - name: Set environment variables
         run: |
           echo "IMG_URL=https://fw20.koolcenter.com/iStoreOS/armsr/istoreos-24.10.7-2026060510-armsr-squashfs-combined-efi.img.gz" >> $GITHUB_ENV
           echo "WORK_DIR=${{ github.workspace }}/work" >> $GITHUB_ENV
-          echo "SQUASH_MNT=${{ github.workspace }}/squash_mnt" >> $GITHUB_ENV
+          echo "SQUASH_TMP=${{ github.workspace }}/squashfs_root" >> $GITHUB_ENV
+          echo "EXT4_IMG=${{ github.workspace }}/rootfs.img" >> $GITHUB_ENV
+          echo "EXT4_MNT=${{ github.workspace }}/ext4_mnt" >> $GITHUB_ENV
 
-      - name: Create work dir
+      - name: Create directories
         run: |
           mkdir -p "${{ env.WORK_DIR }}"
-          mkdir -p "${{ env.SQUASH_MNT }}"
+          mkdir -p "${{ env.SQUASH_TMP }}"
+          mkdir -p "${{ env.EXT4_MNT }}"
           cd "${{ env.WORK_DIR }}"
 
-      # 缓存镜像压缩包
-      - name: Cache image archive
+      - name: Cache firmware archive
         uses: actions/cache@v4
         with:
           path: ${{ env.WORK_DIR }}/istoreos.img.gz
           key: istoreos-armsr-${{ hashText(env.IMG_URL) }}
           restore-keys: istoreos-armsr-
 
-      - name: Download image
+      - name: Download firmware (cache first)
         run: |
           cd "${{ env.WORK_DIR }}"
           if [ -f "istoreos.img.gz" ]; then
-            echo "✅ 缓存命中，跳过下载"
+            echo "✅ Use cached file"
           else
-            echo "🔽 缓存未命中，开始下载"
+            echo "🔽 Downloading firmware..."
             wget -c --retry-connrefused --tries=3 --timeout=10 "${{ env.IMG_URL }}" -O istoreos.img.gz
           fi
 
-      - name: Decompress image
+      - name: Decompress gz to raw img
         run: |
           cd "${{ env.WORK_DIR }}"
           zcat istoreos.img.gz > istoreos.img || true
 
-      # 挂载磁盘分区
-      - name: Map & mount partition
+      - name: Mount raw image partition
         run: |
           cd "${{ env.WORK_DIR }}"
           sudo qemu-nbd -f raw -c /dev/nbd0 istoreos.img
@@ -68,41 +68,36 @@ jobs:
           sudo mkdir -p /mnt/istoreos
           sudo mount /dev/mapper/nbd0p1 /mnt/istoreos
 
-      # 关键：解压内嵌 root.squashfs
-      - name: Extract squashfs rootfs
+      - name: Extract root.squashfs
         run: |
-          cd "${{ env.WORK_DIR }}"
-          # 解压 squashfs 到独立目录
-          sudo unsquashfs -d "${{ env.SQUASH_MNT }}" /mnt/istoreos/root.squashfs
-          # 校验是否存在 /sbin/init
-          ls -lh "${{ env.SQUASH_MNT }}"/sbin/init
+          sudo unsquashfs -f -d "${{ env.SQUASH_TMP }}" /mnt/istoreos/root.squashfs
+          ls -lh "${{ env.SQUASH_TMP }}/sbin/init"
 
-      # 打包标准 rootfs（从 squashfs 解压目录打包）
-      - name: Package valid rootfs.tar.gz
+      - name: Create empty ext4 rootfs.img
         run: |
-          cd "${{ env.SQUASH_MNT }}"
-          sudo tar czf "${{ env.WORK_DIR }}/istoreos-droid-rootfs.tar.gz" \
-            --exclude='dev/*' \
-            --exclude='proc/*' \
-            --exclude='sys/*' \
-            --exclude='tmp/*' \
-            --exclude='run/*' \
-            --exclude='lost+found' \
-            .
-          ls -lh "${{ env.WORK_DIR }}"
+          # 分配 1.5G 空镜像，可根据需求调整大小
+          dd if=/dev/zero of="${{ env.EXT4_IMG }}" bs=1M count=1536
+          # 格式化为 ext4
+          mkfs.ext4 -F "${{ env.EXT4_IMG }}"
 
-      # 全局清理
-      - name: Cleanup
+      - name: Mount ext4 image & copy rootfs
+        run: |
+          sudo mount -o loop "${{ env.EXT4_IMG }}" "${{ env.EXT4_MNT }}"
+          # 完整复制系统文件，保留权限/软链接
+          sudo cp -a "${{ env.SQUASH_TMP }}"/* "${{ env.EXT4_MNT }}"/
+
+      - name: Unmount all & cleanup
         if: always()
         run: |
+          sudo umount "${{ env.EXT4_MNT }}" 2>/dev/null || true
           sudo umount /mnt/istoreos 2>/dev/null || true
           sudo kpartx -dv /dev/nbd0 2>/dev/null || true
           sudo qemu-nbd -d /dev/nbd0 2>/dev/null || true
           sudo rmmod nbd 2>/dev/null || true
 
-      - name: Upload rootfs
+      - name: Upload rootfs.img artifact
         uses: actions/upload-artifact@v4
         with:
-          name: istoreos-droid-rootfs
-          path: ${{ env.WORK_DIR }}/istoreos-droid-rootfs.tar.gz
+          name: istoreos-droid-rootfs-img
+          path: ${{ env.EXT4_IMG }}
           retention-days: 30
