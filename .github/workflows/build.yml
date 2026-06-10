@@ -1,0 +1,165 @@
+name: Build iStoreOS Arm64 RootFS for Droidspaces
+permissions: write-all
+
+on:
+  repository_dispatch:
+  workflow_dispatch:
+    inputs:
+      ssh:
+        description: 'SSH connection to Actions'
+        required: false
+        default: 'false'
+  schedule:
+    - cron: '0 18 * * 5'
+
+env:
+  REPO_URL: https://git.openwrt.org/openwrt/openwrt.git
+  REPO_BRANCH: main
+  FEEDS_CONF: OpenWRT/feeds.conf.default.none
+  CONFIG_FILE: OpenWRT/v23.arm64.mini.config
+  DIY_P1_SH: OpenWRT/diy-part1.sh
+  DIY_P2_SH: OpenWRT/diy-part2.sh
+  UPLOAD_BIN_DIR: false
+  UPLOAD_FIRMWARE: true
+  UPLOAD_RELEASE: true
+  TZ: Asia/Shanghai
+  FILE_NAME: iStoreOS_Arm64_RootFS_Droidspaces
+  PRODUCT_NAME: iStoreOS_Arm64_Mini
+  KERNEL_PATCHVER: 无内核 · 纯RootFS
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@main
+
+    - name: Check server configuration
+      run: |
+        echo "----------------CPU信息----------------"
+        echo "CPU核心：$(cat /proc/cpuinfo | grep name | cut -f2 -d: | uniq -c)"
+        echo "----------------内存信息----------------"
+        free -h
+        echo "----------------硬盘信息----------------"
+        df -Th
+
+    - name: Initialization environment
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo -E rm -rf /usr/share/dotnet /etc/mysql /etc/php /etc/apt/sources.list.d /usr/local/lib/android
+        sudo -E apt -y purge azure-cli* docker* ghc* llvm* firefox google* dotnet* powershell* openjdk* mysql* php* snap*
+        [ -n "$AGENT_TOOLSDIRECTORY" ] && sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+        sudo -E apt update -qq
+        sudo -E apt -y install $(curl -fsSL https://is.gd/depends_ubuntu_2204) util-linux
+        sudo -E apt -y autoremove --purge
+        sudo apt clean
+        sudo timedatectl set-timezone "$TZ"
+        sudo mkdir -p /workdir
+        sudo chown $USER:$GROUPS /workdir
+
+    - name: Build Cache
+      uses: stupidloud/cachewrtbuild@main
+      with:
+        ccache: 'true'
+        prefix: ${{ github.workspace }}/openwrt
+
+    - name: Time Record
+      id: date
+      run: |
+        echo "START_SECONDS=$(date +%s)" >> $GITHUB_ENV
+        echo "FILE_TIME=$(date +"%Y%m%d-%H%M")" >> $GITHUB_ENV
+
+    - name: Clone OpenWrt Source
+      working-directory: /workdir
+      run: |
+        git clone --depth 1 $REPO_URL -b $REPO_BRANCH openwrt
+        ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
+
+    - name: Load Feeds Config & DIY1
+      run: |
+        [ -e $FEEDS_CONF ] && cp $FEEDS_CONF openwrt/feeds.conf.default
+        chmod +x $DIY_P1_SH
+        cd openwrt && $GITHUB_WORKSPACE/$DIY_P1_SH
+
+    - name: Update & Install Feeds
+      run: |
+        cd openwrt
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+
+    - name: Load Config & DIY2
+      run: |
+        [ -e $CONFIG_FILE ] && cp $CONFIG_FILE openwrt/.config
+        chmod +x $DIY_P2_SH
+        cd openwrt && $GITHUB_WORKSPACE/$DIY_P2_SH
+
+    - name: SSH connection to Actions
+      uses: P3TERX/ssh2actions@v1.0.0
+      if: (github.event.inputs.ssh == 'true')
+
+    - name: Download All Packages
+      run: |
+        cd openwrt
+        make defconfig
+        make download -j8
+        find dl -size -1024c -exec rm -f {} \;
+
+    - name: Compile
+      id: compile
+      run: |
+        cd openwrt
+        echo "使用 $(nproc) 线程编译"
+        # 多线程失败自动降级单线程，最后输出详细日志排错
+        make -j$(nproc) || make -j1 || make -j1 V=s
+        echo "status=success" >> $GITHUB_OUTPUT
+        echo "FILE_DATE=$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
+        END_SECONDS=$(date +%s)
+        SEC=$((END_SECONDS - ${{ env.START_SECONDS }}))
+        echo "BUILD_TIME=$((SEC/3600))时$(((SEC%3600)/60))分$((SEC%60))秒" >> $GITHUB_ENV
+
+    - name: Organize RootFS File
+      id: organize
+      if: steps.compile.outputs.status == 'success'
+      run: |
+        cd openwrt/bin/targets/armsr/armv8/
+        # 清理无用文件，只保留ext4镜像
+        rm -rf packages *.buildinfo profiles.json sha256sums *kernel.bin *.manifest *.tar.gz
+        gzip -d *.root.ext4.gz
+        mv *.root.ext4 iStoreOS_Droidspaces_arm64_${{ env.FILE_DATE }}.ext4
+        echo "FIRMWARE=$PWD" >> $GITHUB_ENV
+        echo "status=success" >> $GITHUB_OUTPUT
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@main
+      if: steps.organize.outputs.status == 'success'
+      with:
+        name: iStoreOS_arm64_ext4
+        path: ${{ env.FIRMWARE }}
+
+    - name: Create GitHub Release
+      uses: ncipollo/release-action@v1
+      if: env.UPLOAD_RELEASE == 'true'
+      with:
+        name: ${{ env.PRODUCT_NAME }}_${{ env.FILE_TIME }}
+        tag: ${{ env.FILE_NAME }}
+        commit: ${{ github.sha }}
+        token: ${{ secrets.GITHUB_TOKEN }}
+        artifacts: ${{ env.FIRMWARE }}/*
+        body: |
+          ### 编译信息
+          - 架构：ARM64 (armsr/armv8)
+          - 类型：纯RootFS ext4 镜像（无内核）
+          - 适配：Droidspaces Android容器
+          - 内置：iStoreOS 应用商店
+          - 编译用时：${{ env.BUILD_TIME }}
+          - 默认网关/DHCP自动获取，LuCI默认密码空
+
+    - name: Clean old runs
+      uses: Mattraks/delete-workflow-runs@main
+      with:
+        token: ${{ github.token }}
+        repository: ${{ github.repository }}
+        retain_days: 3
+        keep_minimum_runs: 3
