@@ -7,57 +7,61 @@ on:
 env:
   TARGET_ARCH: aarch64
   ROOTFS_NAME: istoreos-droidspaces-rootfs-${{ github.run_id }}.tar.gz
-  BUILD_DIR: /opt/istoreos-build
+  REPO_URL: https://github.com/Arthur97172/iStoreOS-ARM.git
+  WORK_DIR: /opt/istoreos-build
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: Install build dependencies
+      - name: 安装编译依赖
         run: |
           sudo apt update -y
           sudo apt install -y \
             build-essential libncurses-dev gawk flex bison \
             git python3 python3-pip unzip wget curl rsync \
             libssl-dev qemu-utils fakeroot kmod \
-            tar gzip file
+            tar gzip file ca-certificates
 
-      - name: Clone iStoreOS-ARM source
+      - name: 创建工作目录 & 拉取源码
         run: |
-          sudo mkdir -p ${{ env.BUILD_DIR }}
-          sudo chown $USER:$USER ${{ env.BUILD_DIR }}
-          cd ${{ env.BUILD_DIR }}
-          git clone --depth 1 https://github.com/Arthur97172/iStoreOS-ARM.git .
+          sudo mkdir -p ${{ env.WORK_DIR }}
+          sudo chown -R $USER:$USER ${{ env.WORK_DIR }}
+          cd ${{ env.WORK_DIR }}
+          # 克隆到子目录，避免目录混乱
+          git clone --depth 1 ${{ env.REPO_URL }} source
+          cd source
+          ls -la
 
-      - name: Update feeds & install packages
+      - name: 初始化 feeds & 更新软件源
         run: |
-          cd ${{ env.BUILD_DIR }}
+          cd ${{ env.WORK_DIR }}/source
+          chmod +x ./scripts/feeds
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: Generate default config (aarch64)
+      - name: 生成默认配置
         run: |
-          cd ${{ env.BUILD_DIR }}
-          # 生成对应架构默认配置
+          cd ${{ env.WORK_DIR }}/source
           make defconfig
 
-      - name: Build rootfs only (no firmware)
+      - name: 编译 rootfs
         run: |
-          cd ${{ env.BUILD_DIR }}
-          # 仅编译根文件系统，不编译内核/固件
+          cd ${{ env.WORK_DIR }}/source
           make -j$(nproc) V=s rootfs
 
-      - name: Package rootfs to tar.gz
+      - name: 整理产物并打包
         run: |
-          cd ${{ env.BUILD_DIR }}
-          # OpenWrt 编译产物默认输出路径
-          OUT_ROOTFS=$(find bin/targets/ -name "rootfs.tar.gz" | head -n1)
-          mv ${OUT_ROOTFS} ./${{ env.ROOTFS_NAME }}
-          ls -lh ./${{ env.ROOTFS_NAME }}
+          cd ${{ env.WORK_DIR }}/source
+          # 查找编译输出的 rootfs.tar.gz
+          find bin/ -name "rootfs.tar.gz"
+          OUT_FILE=$(find bin/ -name "rootfs.tar.gz" | head -n1)
+          cp ${OUT_FILE} ${{ env.WORK_DIR }}/${{ env.ROOTFS_NAME }}
+          ls -lh ${{ env.WORK_DIR }}/${{ env.ROOTFS_NAME }}
 
-      - name: Upload artifact
+      - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.ROOTFS_NAME }}
-          path: ${{ env.BUILD_DIR }}/${{ env.ROOTFS_NAME }}
+          name: istoreos-rootfs
+          path: ${{ env.WORK_DIR }}/${{ env.ROOTFS_NAME }}
           retention-days: 30
