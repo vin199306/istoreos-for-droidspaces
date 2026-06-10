@@ -1,6 +1,5 @@
 name: Build iStoreOS arm64 rootfs
 
-# 触发方式：手动点击运行 / 推送代码触发
 on:
   workflow_dispatch:
   push:
@@ -9,36 +8,59 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Install system dependencies
         run: |
-          sudo apt update
+          sudo apt update -y
           sudo apt install -y qemu-utils gzip kpartx
           sudo modprobe nbd max_part=16
+          echo "✅ NBD module loaded"
 
       - name: Create work dir
         run: |
-          mkdir -p /opt/istoreos-work
+          sudo mkdir -p /opt/istoreos-work
           cd /opt/istoreos-work
+          pwd
 
-      - name: Download & Decompress image
+      # ========== 缓存配置开始 ==========
+      - name: Cache iStoreOS image archive
+        uses: actions/cache@v4
+        with:
+          # 缓存目录：镜像压缩包存放路径
+          path: /opt/istoreos-work/istoreos.img.gz
+          # 缓存 Key：绑定镜像URL，URL变则缓存失效、重新下载
+          key: istoreos-img-${{ hashFiles('**/.cache-key') }}-${{ github.sha }}-${{ vars.IMG_URL }}
+          restore-keys: |
+            istoreos-img-
+      # 定义镜像地址为变量，统一管理 + 用于缓存key
+      - name: Set image url variable
+        run: |
+          echo "IMG_URL=https://fw20.koolcenter.com/iStoreOS/armsr/istoreos-24.10.7-2026060510-armsr-squashfs-combined-efi.img.gz" >> $GITHUB_ENV
+      # ========== 缓存配置结束 ==========
+
+      - name: Download image (use cache first)
         run: |
           cd /opt/istoreos-work
-          IMG_URL="https://fw20.koolcenter.com/iStoreOS/armsr/istoreos-24.10.7-2026060510-armsr-squashfs-combined-efi.img.gz"
-          
-          # 1. 带重试的下载（失败自动重试3次）
-          wget -c --retry-connrefused --tries=3 "${IMG_URL}" -O istoreos.img.gz.tmp
-          mv istoreos.img.gz.tmp istoreos.img.gz
-      
-          # 2. 先校验文件完整性（可选但强烈推荐）
-          # 你可以从 iStoreOS 官网找到对应镜像的 sha256sum，替换下面的字符串
-          # echo "你的sha256值  istoreos.img.gz" | sha256sum -c -
-      
-          # 3. 安全解压（即使有trailing garbage也能解压出有效部分）
-          gunzip -c istoreos.img.gz > istoreos.img
+          # 缓存不存在才执行下载
+          if [ ! -f "istoreos.img.gz" ]; then
+            echo "🔽 Cache miss, start downloading image..."
+            wget -c --retry-connrefused --tries=3 --timeout=10 "${{ env.IMG_URL }}" -O istoreos.img.gz
+          else
+            echo "✅ Cache hit, use cached image file"
+          fi
+          ls -lh istoreos.img.gz
+
+      - name: Decompress image
+        run: |
+          cd /opt/istoreos-work
+          # zcat 兼容尾部冗余数据，忽略解压警告
+          zcat istoreos.img.gz > istoreos.img || true
           ls -lh istoreos.img
 
       - name: Map image to NBD device
@@ -47,14 +69,15 @@ jobs:
           sudo qemu-nbd -c /dev/nbd0 istoreos.img
           sleep 2
           sudo kpartx -av /dev/nbd0
+          ls -l /dev/mapper/
 
       - name: Mount root partition
         run: |
           sudo mkdir -p /mnt/istoreos
-          # iStoreOS 标准分区为 nbd0p1
           sudo mount /dev/mapper/nbd0p1 /mnt/istoreos
+          df -h
 
-      - name: Package rootfs.tar.gz (exclude virtual dirs)
+      - name: Package rootfs.tar.gz
         run: |
           cd /mnt/istoreos
           sudo tar --create --gzip \
@@ -65,16 +88,21 @@ jobs:
             --exclude='run/*' \
             --exclude='lost+found' \
             -f /opt/istoreos-work/istoreos-arm64-rootfs.tar.gz .
+          
+          echo "✅ rootfs 打包完成"
           ls -lh /opt/istoreos-work/
 
+      # 无论成败强制清理，防止设备占用
       - name: Unmount & cleanup NBD
+        if: always()
         run: |
-          sudo umount /mnt/istoreos
-          sudo kpartx -dv /dev/nbd0
-          sudo qemu-nbd -d /dev/nbd0
-          sudo rmmod nbd || true
+          sudo umount /mnt/istoreos 2>/dev/null || true
+          sudo kpartx -dv /dev/nbd0 2>/dev/null || true
+          sudo qemu-nbd -d /dev/nbd0 2>/dev/null || true
+          sudo rmmod nbd 2>/dev/null || true
+          echo "✅ Cleanup finished"
 
-      - name: Upload rootfs as artifact
+      - name: Upload rootfs artifact
         uses: actions/upload-artifact@v4
         with:
           name: istoreos-arm64-rootfs
