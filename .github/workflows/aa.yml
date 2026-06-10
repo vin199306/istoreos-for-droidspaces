@@ -27,12 +27,13 @@ jobs:
           echo "IMG_GZ=istoreos.img.gz" >> $GITHUB_ENV
           echo "IMG_RAW=istoreos.img" >> $GITHUB_ENV
           echo "SYS_MNT=./sys_mnt" >> $GITHUB_ENV
+          echo "RW_ROOT=./rw_root" >> $GITHUB_ENV
           echo "OUT_TAR=./rootfs.tar.gz" >> $GITHUB_ENV
           echo "RELEASE_TAG=latest" >> $GITHUB_ENV
 
       - name: Create dirs
         run: |
-          mkdir -p ./sys_mnt
+          mkdir -p ./sys_mnt ./rw_root
 
       - name: Download image
         run: |
@@ -47,28 +48,36 @@ jobs:
         run: |
           zcat "${{ env.IMG_GZ }}" > "${{ env.IMG_RAW }}" || true
 
-      - name: Mount system partition nbd0p2
+      - name: Mount read-only system partition nbd0p2
         run: |
           sudo qemu-nbd -f raw -c /dev/nbd0 "${{ env.IMG_RAW }}"
           sleep 3
           sudo kpartx -av /dev/nbd0
           sudo mount /dev/mapper/nbd0p2 "${{ env.SYS_MNT }}"
-          echo "=== 检查 /sbin/init /run ==="
+          echo "=== 检查 /sbin/init ==="
           ls -la "${{ env.SYS_MNT }}/sbin/init"
-          ls -ld "${{ env.SYS_MNT }}/run" || true
 
-      # 补全缺失目录 + 标准打包（保留权限、软链接、设备文件）
-      - name: Fix dirs & Package to tar.gz
+      # 拷贝只读分区内容到可读写目录
+      - name: Copy to writable directory
         run: |
-          cd "${{ env.SYS_MNT }}"
-          # 强制创建 /run 目录，权限755
-          sudo mkdir -p run tmp/run
-          sudo chmod 755 run
-          # 修复原软链接 run -> /tmp/run
+          sudo cp -a "${{ env.SYS_MNT }}"/* "${{ env.RW_ROOT }}/"
+
+      # 修复 /run 目录与软链接
+      - name: Fix /run dir & symlink
+        run: |
+          cd "${{ env.RW_ROOT }}"
+          sudo mkdir -p tmp/run
+          sudo rm -f run
           sudo ln -sf tmp/run run
-          # 完整打包：保留权限、所有者、软链接、特殊文件
+          sudo chmod 755 run tmp/run
+
+      # 打包为 tar.gz
+      - name: Package to rootfs.tar.gz
+        run: |
+          cd "${{ env.RW_ROOT }}"
           sudo tar --preserve-permissions --preserve-order -zcvf ../rootfs.tar.gz .
 
+      # 统一清理设备与挂载
       - name: Full cleanup
         if: always()
         run: |
@@ -77,13 +86,13 @@ jobs:
           sudo qemu-nbd -d /dev/nbd0 2>/dev/null || true
           sudo rmmod nbd 2>/dev/null || true
 
-      # 上传到 Release
+      # 上传到 GitHub Release
       - name: Upload to Release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           name: iStoreOS rootfs.tar.gz for Droidspaces
-          body: 修复/run目录与软链接，适配Droidspaces正常启动
+          body: 已替换官方下载源，修复 /run 目录及软链接，适配 Droidspaces 正常启动
           files: |
             ./rootfs.tar.gz
           draft: false
