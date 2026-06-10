@@ -9,42 +9,44 @@ env:
   QEMU_BIN: qemu-aarch64-static
   ROOTFS_NAME: istoreos-rootfs-droidspaces-${{ github.run_id }}.tar.gz
   WORK_DIR: /tmp/istoreos-build
+  # Debian ARM64 专用 Ports 源
+  DEB_SOURCE: http://deb.debian.org/debian-ports
 
 jobs:
   build-rootfs:
     runs-on: ubuntu-22.04
     steps:
-      - name: 安装依赖
+      - name: 安装完整依赖 + Debian 密钥环
         run: |
           sudo apt update && sudo apt install -y \
+            debian-archive-keyring debian-ports-archive-keyring \
             debootstrap qemu-user-static binfmt-support \
             tar gzip rsync wget curl sudo git \
             squashfs-tools fakeroot build-essential
-          # 查看当前 qemu 静态文件
           ls -la /usr/bin/qemu*static
 
-      - name: 初始化 rootfs 目录
+      - name: 初始化 aarch64 rootfs (使用 Debian Ports)
         run: |
           mkdir -p ${{ env.WORK_DIR }}/rootfs
           sudo debootstrap --arch=${{ env.TARGET_ARCH }} \
             --foreign \
-            sid \
+            bookworm \
             ${{ env.WORK_DIR }}/rootfs \
-            http://deb.debian.org/debian
+            ${{ env.DEB_SOURCE }}
 
-      - name: 复制 QEMU 静态二进制
+      - name: 复制 QEMU 静态模拟器 & 完成引导
         run: |
           sudo cp /usr/bin/${{ env.QEMU_BIN }} ${{ env.WORK_DIR }}/rootfs/usr/bin/
-          ls -la ${{ env.WORK_DIR }}/rootfs/usr/bin/qemu*
-          # 完成 debootstrap 第二阶段
           sudo chroot ${{ env.WORK_DIR }}/rootfs /debootstrap/debootstrap --second-stage
 
-      - name: 添加 iStoreOS 源 & 安装组件
+      - name: 添加 iStoreOS 软件源
         run: |
           sudo tee ${{ env.WORK_DIR }}/rootfs/etc/apt/sources.list.d/istoreos.list > /dev/null << EOF
           deb https://fw.koolcenter.com/binary/istoreos/ stable main
           EOF
 
+      - name: 安装 iStoreOS 核心组件
+        run: |
           sudo chroot ${{ env.WORK_DIR }}/rootfs /bin/bash -c "
             apt update && apt install -y --no-install-recommends \
               istoreos-core istoreos-webui istoreos-utils \
@@ -74,7 +76,7 @@ jobs:
 
           sudo mkdir -p ${{ env.WORK_DIR }}/rootfs/root/.ssh
           sudo tee ${{ env.WORK_DIR }}/rootfs/root/.ssh/authorized_keys > /dev/null << EOF
-          # 在此填入你的 SSH 公钥
+          # 请在此粘贴你的 SSH 公钥
           EOF
           sudo chmod 700 ${{ env.WORK_DIR }}/rootfs/root/.ssh
           sudo chmod 600 ${{ env.WORK_DIR }}/rootfs/root/.ssh/authorized_keys
@@ -82,7 +84,7 @@ jobs:
           sudo sed -i 's/192.168.1.1/192.168.43.1/g' ${{ env.WORK_DIR }}/rootfs/etc/config/network
           sudo sed -i 's/option disabled 1/option disabled 0/g' ${{ env.WORK_DIR }}/rootfs/etc/config/network
 
-      - name: 打包为 tar.gz
+      - name: 打包为 tar.gz 格式
         run: |
           cd ${{ env.WORK_DIR }}/rootfs
           sudo tar --exclude='./dev/*' \
@@ -92,7 +94,7 @@ jobs:
                    -zcvf ../${{ env.ROOTFS_NAME }} .
           sudo chown $USER:$USER ../${{ env.ROOTFS_NAME }}
 
-      - name: 上传产物
+      - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
           name: istoreos-rootfs-droidspaces
