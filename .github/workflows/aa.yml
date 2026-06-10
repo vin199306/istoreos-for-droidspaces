@@ -16,7 +16,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install all dependencies
+      - name: Install dependencies
         run: |
           sudo apt update -y
           sudo apt install -y qemu-utils gzip kpartx squashfs-tools e2fsprogs
@@ -29,13 +29,14 @@ jobs:
           echo "SQUASH_TMP=${{ github.workspace }}/squashfs_root" >> $GITHUB_ENV
           echo "EXT4_IMG=${{ github.workspace }}/rootfs.img" >> $GITHUB_ENV
           echo "EXT4_MNT=${{ github.workspace }}/ext4_mnt" >> $GITHUB_ENV
+          echo "ISTORE_MNT=/mnt/istoreos" >> $GITHUB_ENV
 
       - name: Create directories
         run: |
           mkdir -p "${{ env.WORK_DIR }}"
           mkdir -p "${{ env.SQUASH_TMP }}"
           mkdir -p "${{ env.EXT4_MNT }}"
-          cd "${{ env.WORK_DIR }}"
+          mkdir -p "${{ env.ISTORE_MNT }}"
 
       - name: Cache firmware archive
         uses: actions/cache@v4
@@ -44,58 +45,54 @@ jobs:
           key: istoreos-armsr-${{ hashText(env.IMG_URL) }}
           restore-keys: istoreos-armsr-
 
-      - name: Download firmware (cache first)
+      - name: Download firmware
         run: |
           cd "${{ env.WORK_DIR }}"
           if [ -f "istoreos.img.gz" ]; then
-            echo "✅ Use cached file"
+            echo "✅ Cache hit, skip download"
           else
             echo "🔽 Downloading firmware..."
             wget -c --retry-connrefused --tries=3 --timeout=10 "${{ env.IMG_URL }}" -O istoreos.img.gz
           fi
 
-      - name: Decompress gz to raw img
+      - name: Decompress image
         run: |
           cd "${{ env.WORK_DIR }}"
           zcat istoreos.img.gz > istoreos.img || true
 
-      - name: Mount raw image partition
+      - name: Map and mount raw image
         run: |
           cd "${{ env.WORK_DIR }}"
           sudo qemu-nbd -f raw -c /dev/nbd0 istoreos.img
           sleep 2
           sudo kpartx -av /dev/nbd0
-          sudo mkdir -p /mnt/istoreos
-          sudo mount /dev/mapper/nbd0p1 /mnt/istoreos
+          sudo mount /dev/mapper/nbd0p1 "${{ env.ISTORE_MNT }}"
 
       - name: Extract root.squashfs
         run: |
-          sudo unsquashfs -f -d "${{ env.SQUASH_TMP }}" /mnt/istoreos/root.squashfs
-          ls -lh "${{ env.SQUASH_TMP }}/sbin/init"
+          sudo unsquashfs -f -d "${{ env.SQUASH_TMP }}" "${{ env.ISTORE_MNT }}/root.squashfs"
+          ls -la "${{ env.SQUASH_TMP }}/sbin/init"
 
-      - name: Create empty ext4 rootfs.img
+      - name: Create 1.5G ext4 rootfs.img
         run: |
-          # 分配 1.5G 空镜像，可根据需求调整大小
-          dd if=/dev/zero of="${{ env.EXT4_IMG }}" bs=1M count=1536
-          # 格式化为 ext4
+          dd if=/dev/zero of="${{ env.EXT4_IMG }}" bs=1M count=1536 status=none
           mkfs.ext4 -F "${{ env.EXT4_IMG }}"
 
-      - name: Mount ext4 image & copy rootfs
+      - name: Copy files to ext4 image
         run: |
           sudo mount -o loop "${{ env.EXT4_IMG }}" "${{ env.EXT4_MNT }}"
-          # 完整复制系统文件，保留权限/软链接
-          sudo cp -a "${{ env.SQUASH_TMP }}"/* "${{ env.EXT4_MNT }}"/
+          sudo cp -a "${{ env.SQUASH_TMP }}"/* "${{ env.EXT4_MNT }}/"
 
-      - name: Unmount all & cleanup
+      - name: Full cleanup
         if: always()
         run: |
           sudo umount "${{ env.EXT4_MNT }}" 2>/dev/null || true
-          sudo umount /mnt/istoreos 2>/dev/null || true
+          sudo umount "${{ env.ISTORE_MNT }}" 2>/dev/null || true
           sudo kpartx -dv /dev/nbd0 2>/dev/null || true
           sudo qemu-nbd -d /dev/nbd0 2>/dev/null || true
           sudo rmmod nbd 2>/dev/null || true
 
-      - name: Upload rootfs.img artifact
+      - name: Upload rootfs.img
         uses: actions/upload-artifact@v4
         with:
           name: istoreos-droid-rootfs-img
