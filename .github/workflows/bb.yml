@@ -1,102 +1,63 @@
-name: Build iStoreOS Rootfs for DroidSpaces
+name: Build iStoreOS RootFS (tar.gz) for DroidSpaces
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 0 * * 0'
+    - cron: '0 1 * * 0'
 
 env:
   TARGET_ARCH: aarch64
-  QEMU_BIN: qemu-aarch64-static
-  ROOTFS_NAME: istoreos-rootfs-droidspaces-${{ github.run_id }}.tar.gz
-  WORK_DIR: /tmp/istoreos-build
-  # Debian ARM64 专用 Ports 源
-  DEB_SOURCE: http://deb.debian.org/debian-ports
+  ROOTFS_NAME: istoreos-droidspaces-rootfs-${{ github.run_id }}.tar.gz
+  BUILD_DIR: /opt/istoreos-build
 
 jobs:
-  build-rootfs:
+  build:
     runs-on: ubuntu-22.04
     steps:
-      - name: 安装完整依赖 + Debian 密钥环
+      - name: Install build dependencies
         run: |
-          sudo apt update && sudo apt install -y \
-            debian-archive-keyring debian-ports-archive-keyring \
-            debootstrap qemu-user-static binfmt-support \
-            tar gzip rsync wget curl sudo git \
-            squashfs-tools fakeroot build-essential
-          ls -la /usr/bin/qemu*static
+          sudo apt update -y
+          sudo apt install -y \
+            build-essential libncurses-dev gawk flex bison \
+            git python3 python3-pip unzip wget curl rsync \
+            libssl-dev qemu-utils fakeroot kmod \
+            tar gzip file
 
-      - name: 初始化 aarch64 rootfs (使用 Debian Ports)
+      - name: Clone iStoreOS-ARM source
         run: |
-          mkdir -p ${{ env.WORK_DIR }}/rootfs
-          sudo debootstrap --arch=${{ env.TARGET_ARCH }} \
-            --foreign \
-            bookworm \
-            ${{ env.WORK_DIR }}/rootfs \
-            ${{ env.DEB_SOURCE }}
+          sudo mkdir -p ${{ env.BUILD_DIR }}
+          sudo chown $USER:$USER ${{ env.BUILD_DIR }}
+          cd ${{ env.BUILD_DIR }}
+          git clone --depth 1 https://github.com/Arthur97172/iStoreOS-ARM.git .
 
-      - name: 复制 QEMU 静态模拟器 & 完成引导
+      - name: Update feeds & install packages
         run: |
-          sudo cp /usr/bin/${{ env.QEMU_BIN }} ${{ env.WORK_DIR }}/rootfs/usr/bin/
-          sudo chroot ${{ env.WORK_DIR }}/rootfs /debootstrap/debootstrap --second-stage
+          cd ${{ env.BUILD_DIR }}
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
 
-      - name: 添加 iStoreOS 软件源
+      - name: Generate default config (aarch64)
         run: |
-          sudo tee ${{ env.WORK_DIR }}/rootfs/etc/apt/sources.list.d/istoreos.list > /dev/null << EOF
-          deb https://fw.koolcenter.com/binary/istoreos/ stable main
-          EOF
+          cd ${{ env.BUILD_DIR }}
+          # 生成对应架构默认配置
+          make defconfig
 
-      - name: 安装 iStoreOS 核心组件
+      - name: Build rootfs only (no firmware)
         run: |
-          sudo chroot ${{ env.WORK_DIR }}/rootfs /bin/bash -c "
-            apt update && apt install -y --no-install-recommends \
-              istoreos-core istoreos-webui istoreos-utils \
-              openssh-server iproute2 dhcpcd5 iptables \
-              kmod mount util-linux procps nginx;
-            apt clean;
-            rm -rf /var/lib/apt/lists/*;
-          "
+          cd ${{ env.BUILD_DIR }}
+          # 仅编译根文件系统，不编译内核/固件
+          make -j$(nproc) V=s rootfs
 
-      - name: 适配 DroidSpaces 容器环境
+      - name: Package rootfs to tar.gz
         run: |
-          sudo mkdir -p ${{ env.WORK_DIR }}/rootfs/mnt/sdcard ${{ env.WORK_DIR }}/rootfs/dev ${{ env.WORK_DIR }}/rootfs/proc ${{ env.WORK_DIR }}/rootfs/sys
-          sudo touch ${{ env.WORK_DIR }}/rootfs/etc/fstab
-          sudo tee -a ${{ env.WORK_DIR }}/rootfs/etc/fstab > /dev/null << EOF
-          proc /proc proc defaults 0 0
-          sysfs /sys sysfs defaults 0 0
-          tmpfs /tmp tmpfs defaults 0 0
-          /dev/block/mmcblk0p1 /mnt/sdcard vfat defaults 0 0
-          EOF
+          cd ${{ env.BUILD_DIR }}
+          # OpenWrt 编译产物默认输出路径
+          OUT_ROOTFS=$(find bin/targets/ -name "rootfs.tar.gz" | head -n1)
+          mv ${OUT_ROOTFS} ./${{ env.ROOTFS_NAME }}
+          ls -lh ./${{ env.ROOTFS_NAME }}
 
-          sudo chroot ${{ env.WORK_DIR }}/rootfs /bin/bash -c "
-            systemctl disable systemd-resolved.service;
-            systemctl disable NetworkManager.service;
-            systemctl enable ssh.service;
-            systemctl enable nginx.service;
-          "
-
-          sudo mkdir -p ${{ env.WORK_DIR }}/rootfs/root/.ssh
-          sudo tee ${{ env.WORK_DIR }}/rootfs/root/.ssh/authorized_keys > /dev/null << EOF
-          # 请在此粘贴你的 SSH 公钥
-          EOF
-          sudo chmod 700 ${{ env.WORK_DIR }}/rootfs/root/.ssh
-          sudo chmod 600 ${{ env.WORK_DIR }}/rootfs/root/.ssh/authorized_keys
-
-          sudo sed -i 's/192.168.1.1/192.168.43.1/g' ${{ env.WORK_DIR }}/rootfs/etc/config/network
-          sudo sed -i 's/option disabled 1/option disabled 0/g' ${{ env.WORK_DIR }}/rootfs/etc/config/network
-
-      - name: 打包为 tar.gz 格式
-        run: |
-          cd ${{ env.WORK_DIR }}/rootfs
-          sudo tar --exclude='./dev/*' \
-                   --exclude='./proc/*' \
-                   --exclude='./sys/*' \
-                   --exclude='./tmp/*' \
-                   -zcvf ../${{ env.ROOTFS_NAME }} .
-          sudo chown $USER:$USER ../${{ env.ROOTFS_NAME }}
-
-      - name: 上传构建产物
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: istoreos-rootfs-droidspaces
-          path: ${{ env.WORK_DIR }}/${{ env.ROOTFS_NAME }}
+          name: ${{ env.ROOTFS_NAME }}
+          path: ${{ env.BUILD_DIR }}/${{ env.ROOTFS_NAME }}
           retention-days: 30
