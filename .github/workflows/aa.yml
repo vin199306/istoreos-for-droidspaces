@@ -1,4 +1,4 @@
-name: Build & Release iStoreOS rootfs.img for Droidspaces
+name: Build & Release iStoreOS rootfs.tar.gz for Droidspaces
 on:
   workflow_dispatch:
   push:
@@ -18,7 +18,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt update -y
-          sudo apt install -y qemu-utils gzip kpartx e2fsprogs
+          sudo apt install -y qemu-utils gzip kpartx
           sudo modprobe nbd max_part=16
 
       - name: Set environment variables
@@ -27,13 +27,12 @@ jobs:
           echo "IMG_GZ=istoreos.img.gz" >> $GITHUB_ENV
           echo "IMG_RAW=istoreos.img" >> $GITHUB_ENV
           echo "SYS_MNT=./sys_mnt" >> $GITHUB_ENV
-          echo "EXT4_MNT=./ext4_mnt" >> $GITHUB_ENV
-          echo "OUT_IMG=./rootfs.img" >> $GITHUB_ENV
+          echo "OUT_TAR=./rootfs.tar.gz" >> $GITHUB_ENV
           echo "RELEASE_TAG=latest" >> $GITHUB_ENV
 
       - name: Create dirs
         run: |
-          mkdir -p ./sys_mnt ./ext4_mnt
+          mkdir -p ./sys_mnt
 
       - name: Download image
         run: |
@@ -57,49 +56,29 @@ jobs:
           echo "=== 检查 /sbin/init ==="
           ls -la "${{ env.SYS_MNT }}/sbin/init"
 
-      # 动态计算镜像大小：实际占用 + 30%富余，单位MB
-      - name: Calculate image size & create ext4
+      # 打包为标准 rootfs.tar.gz（保留权限、软链接）
+      - name: Package to tar.gz
         run: |
-          # 统计实际占用(MB)
-          USED=$(sudo du -sm "${{ env.SYS_MNT }}" | awk '{print $1}')
-          echo "原始文件占用: ${USED} MB"
-          # 增加30%富余空间
-          SIZE=$(( USED * 130 / 100 ))
-          echo "最终镜像大小: ${SIZE} MB"
-          # 生成对应大小空镜像
-          dd if=/dev/zero of="${{ env.OUT_IMG }}" bs=1M count=${SIZE} status=none
-          mkfs.ext4 -F "${{ env.OUT_IMG }}"
-
-      - name: Copy files to ext4
-        run: |
-          sudo mount -o loop "${{ env.OUT_IMG }}" "${{ env.EXT4_MNT }}"
-          sudo cp -a "${{ env.SYS_MNT }}"/* "${{ env.EXT4_MNT }}/"
-
-      - name: Shrink ext4 to minimal size（进一步瘦身）
-        run: |
-          sudo umount "${{ env.EXT4_MNT }}"
-          # 检查并压缩镜像至最小体积
-          sudo e2fsck -f "${{ env.OUT_IMG }}"
-          sudo resize2fs -M "${{ env.OUT_IMG }}"
+          cd "${{ env.SYS_MNT }}"
+          sudo tar -zcvf ../rootfs.tar.gz .
 
       - name: Full cleanup
         if: always()
         run: |
-          sudo umount "${{ env.EXT4_MNT }}" 2>/dev/null || true
           sudo umount "${{ env.SYS_MNT }}" 2>/dev/null || true
           sudo kpartx -dv /dev/nbd0 2>/dev/null || true
           sudo qemu-nbd -d /dev/nbd0 2>/dev/null || true
           sudo rmmod nbd 2>/dev/null || true
 
-      # 上传到 Release
+      # 上传 tar.gz 到 GitHub Release
       - name: Upload to Release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ env.RELEASE_TAG }}
-          name: iStoreOS rootfs.img for Droidspaces
-          body: 自动构建 iStoreOS arm64 精简版 ext4 镜像，适配 Droidspaces
+          name: iStoreOS rootfs.tar.gz for Droidspaces
+          body: 标准 Linux 根文件系统 tar.gz 压缩包，适配 Droidspaces
           files: |
-            ./rootfs.img
+            ./rootfs.tar.gz
           draft: false
           prerelease: false
         env:
