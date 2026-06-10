@@ -38,11 +38,12 @@ jobs:
           mkdir -p "${{ env.EXT4_MNT }}"
           mkdir -p "${{ env.ISTORE_MNT }}"
 
+      # 修复：去掉 hashText，直接用 URL 组成 key
       - name: Cache firmware archive
         uses: actions/cache@v4
         with:
           path: ${{ env.WORK_DIR }}/istoreos.img.gz
-          key: istoreos-armsr-${{ hashText(env.IMG_URL) }}
+          key: istoreos-armsr-${{ env.IMG_URL }}
           restore-keys: istoreos-armsr-
 
       - name: Download firmware
