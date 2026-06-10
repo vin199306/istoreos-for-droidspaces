@@ -23,23 +23,23 @@ jobs:
 
       - name: Set env
         run: |
-          echo "IMG_URL=https://fw.d4ctech.com/iStoreOS/armsr/istoreos-24.10.7-2026060510-armsr-squashfs-combined-efi.img.gz" >> $GITHUB_ENV
+          echo "IMG_URL=https://dl.istoreos.com/iStoreOS/armsr/istoreos-24.10.7-2026060510-armsr-squashfs-combined-efi.img.gz" >> $GITHUB_ENV
           echo "IMG_GZ=istoreos.img.gz" >> $GITHUB_ENV
           echo "IMG_RAW=istoreos.img" >> $GITHUB_ENV
-          echo "MNT_DIR=./mnt_all" >> $GITHUB_ENV
+          echo "SYS_MNT=./sys_mnt" >> $GITHUB_ENV
           echo "EXT4_MNT=./ext4_mnt" >> $GITHUB_ENV
           echo "OUT_IMG=./rootfs.img" >> $GITHUB_ENV
 
       - name: Create dirs
         run: |
-          mkdir -p ./mnt_all ./ext4_mnt
+          mkdir -p ./sys_mnt ./ext4_mnt
 
       - name: Download image
         run: |
           if [ -f "${{ env.IMG_GZ }}" ]; then
-            echo "✅ File exists, skip download"
+            echo "✅ 文件已存在，跳过下载"
           else
-            echo "🔽 Downloading image..."
+            echo "🔽 开始下载镜像"
             wget -c --retry-connrefused --tries=3 --timeout=10 "${{ env.IMG_URL }}" -O "${{ env.IMG_GZ }}"
           fi
 
@@ -47,56 +47,40 @@ jobs:
         run: |
           zcat "${{ env.IMG_GZ }}" > "${{ env.IMG_RAW }}" || true
 
-      # 挂载整个镜像，遍历所有分区，找到包含 /sbin/init 的分区
-      - name: Scan all partitions
+      # 锁定 nbd0p2 为系统分区
+      - name: Mount system partition nbd0p2
         run: |
           sudo qemu-nbd -f raw -c /dev/nbd0 "${{ env.IMG_RAW }}"
           sleep 3
           sudo kpartx -av /dev/nbd0
-          echo "==== All partitions ===="
-          ls -l /dev/mapper/
+          echo "=== 挂载系统分区 nbd0p2 ==="
+          sudo mount /dev/mapper/nbd0p2 "${{ env.SYS_MNT }}"
+          echo "=== 检查 /sbin/init ==="
+          ls -la "${{ env.SYS_MNT }}/sbin/init"
 
-          # 逐个测试分区
-          for part in nbd0p1 nbd0p2 nbd0p3 nbd0p128; do
-            echo -e "\n==== Test partition: $part ===="
-            sudo mount /dev/mapper/$part "${{ env.MNT_DIR }}" 2>/dev/null
-            ls -la "${{ env.MNT_DIR }}"
-            if [ -f "${{ env.MNT_DIR }}/sbin/init" ]; then
-              echo "✅ Found valid rootfs on $part"
-              echo "TARGET_PART=$part" >> $GITHUB_ENV
-              break
-            fi
-            sudo umount "${{ env.MNT_DIR }}" 2>/dev/null
-          done
-
-          if [ -z "${{ env.TARGET_PART }}" ]; then
-            echo "❌ No valid rootfs partition found!"
-            exit 1
-          fi
-
-      # 制作 1.5G ext4 镜像
+      # 生成 1.5G ext4 镜像
       - name: Create ext4 rootfs.img
         run: |
           dd if=/dev/zero of="${{ env.OUT_IMG }}" bs=1M count=1536 status=none
           mkfs.ext4 -F "${{ env.OUT_IMG }}"
 
-      # 复制系统文件到 ext4 镜像
-      - name: Copy rootfs files
+      # 完整复制系统文件
+      - name: Copy files to ext4
         run: |
           sudo mount -o loop "${{ env.OUT_IMG }}" "${{ env.EXT4_MNT }}"
-          sudo cp -a "${{ env.MNT_DIR }}"/* "${{ env.EXT4_MNT }}/"
+          sudo cp -a "${{ env.SYS_MNT }}"/* "${{ env.EXT4_MNT }}/"
 
-      # 全局强制清理
-      - name: Cleanup
+      # 强制清理所有挂载与设备
+      - name: Full cleanup
         if: always()
         run: |
           sudo umount "${{ env.EXT4_MNT }}" 2>/dev/null || true
-          sudo umount "${{ env.MNT_DIR }}" 2>/dev/null || true
+          sudo umount "${{ env.SYS_MNT }}" 2>/dev/null || true
           sudo kpartx -dv /dev/nbd0 2>/dev/null || true
           sudo qemu-nbd -d /dev/nbd0 2>/dev/null || true
           sudo rmmod nbd 2>/dev/null || true
 
-      - name: Upload artifact
+      - name: Upload rootfs.img
         uses: actions/upload-artifact@v4
         with:
           name: istoreos-droid-rootfs-img
