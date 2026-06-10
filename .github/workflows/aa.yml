@@ -53,20 +53,34 @@ jobs:
           sudo qemu-nbd -f raw -c /dev/nbd0 "${{ env.IMG_RAW }}"
           sleep 3
           sudo kpartx -av /dev/nbd0
-          echo "=== 挂载系统分区 nbd0p2 ==="
           sudo mount /dev/mapper/nbd0p2 "${{ env.SYS_MNT }}"
           echo "=== 检查 /sbin/init ==="
           ls -la "${{ env.SYS_MNT }}/sbin/init"
 
-      - name: Create 1.5G ext4 rootfs.img
+      # 动态计算镜像大小：实际占用 + 30%富余，单位MB
+      - name: Calculate image size & create ext4
         run: |
-          dd if=/dev/zero of="${{ env.OUT_IMG }}" bs=1M count=1536 status=none
+          # 统计实际占用(MB)
+          USED=$(sudo du -sm "${{ env.SYS_MNT }}" | awk '{print $1}')
+          echo "原始文件占用: ${USED} MB"
+          # 增加30%富余空间
+          SIZE=$(( USED * 130 / 100 ))
+          echo "最终镜像大小: ${SIZE} MB"
+          # 生成对应大小空镜像
+          dd if=/dev/zero of="${{ env.OUT_IMG }}" bs=1M count=${SIZE} status=none
           mkfs.ext4 -F "${{ env.OUT_IMG }}"
 
       - name: Copy files to ext4
         run: |
           sudo mount -o loop "${{ env.OUT_IMG }}" "${{ env.EXT4_MNT }}"
           sudo cp -a "${{ env.SYS_MNT }}"/* "${{ env.EXT4_MNT }}/"
+
+      - name: Shrink ext4 to minimal size（进一步瘦身）
+        run: |
+          sudo umount "${{ env.EXT4_MNT }}"
+          # 检查并压缩镜像至最小体积
+          sudo e2fsck -f "${{ env.OUT_IMG }}"
+          sudo resize2fs -M "${{ env.OUT_IMG }}"
 
       - name: Full cleanup
         if: always()
@@ -77,13 +91,13 @@ jobs:
           sudo qemu-nbd -d /dev/nbd0 2>/dev/null || true
           sudo rmmod nbd 2>/dev/null || true
 
-      # 上传文件到 GitHub Release
+      # 上传到 Release
       - name: Upload to Release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           name: iStoreOS rootfs.img for Droidspaces
-          body: 自动构建的 iStoreOS arm64 根文件系统镜像，适配 Droidspaces
+          body: 自动构建 iStoreOS arm64 精简版 ext4 镜像，适配 Droidspaces
           files: |
             ./rootfs.img
           draft: false
