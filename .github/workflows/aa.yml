@@ -19,87 +19,60 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt update -y
-          sudo apt install -y qemu-utils gzip kpartx squashfs-tools e2fsprogs
+          sudo apt install -y qemu-utils gzip kpartx e2fsprogs
           sudo modprobe nbd max_part=16
 
-      # 全部目录放在仓库根目录，缓存最稳定
-      - name: Set env
+      - name: Set environment variables
         run: |
           echo "IMG_URL=https://fw20.koolcenter.com/iStoreOS/armsr/istoreos-24.10.7-2026060510-armsr-squashfs-combined-efi.img.gz" >> $GITHUB_ENV
           echo "IMG_GZ=istoreos.img.gz" >> $GITHUB_ENV
           echo "IMG_RAW=istoreos.img" >> $GITHUB_ENV
           echo "ISTORE_MNT=./istore_mnt" >> $GITHUB_ENV
-          echo "SQUASH_TMP=./squashfs_root" >> $GITHUB_ENV
           echo "EXT4_MNT=./ext4_mnt" >> $GITHUB_ENV
           echo "OUT_IMG=./rootfs.img" >> $GITHUB_ENV
 
-      # 统一创建根目录下文件夹
-      - name: Make dirs
+      - name: Create folders
         run: |
-          mkdir -p ./istore_mnt ./squashfs_root ./ext4_mnt
+          mkdir -p ./istore_mnt ./ext4_mnt
 
-      # 缓存：根目录下的 istoreos.img.gz，路径固定不变化
-      - name: Cache image archive
-        uses: actions/cache@v4
-        with:
-          path: ./istoreos.img.gz
-          key: istoreos-${{ env.IMG_URL }}
-          restore-keys: istoreos-
-
-      # 下载：文件存在直接跳过，解决重复下载
       - name: Download image
         run: |
           if [ -f "${{ env.IMG_GZ }}" ]; then
-            echo "✅ 缓存命中，跳过下载"
+            echo "✅ 文件已存在，跳过下载"
           else
             echo "🔽 开始下载镜像"
             wget -c --retry-connrefused --tries=3 --timeout=10 "${{ env.IMG_URL }}" -O "${{ env.IMG_GZ }}"
           fi
 
-      # 解压 gz 为 raw 镜像
-      - name: Decompress
+      - name: Decompress gz to raw image
         run: |
           zcat "${{ env.IMG_GZ }}" > "${{ env.IMG_RAW }}" || true
 
-      # 挂载镜像 + 打印分区与目录（排查找不到文件问题）
-      - name: Mount image partition
+      - name: Mount raw image partition
         run: |
           sudo qemu-nbd -f raw -c /dev/nbd0 "${{ env.IMG_RAW }}"
           sleep 3
           sudo kpartx -av /dev/nbd0
-          echo "=== 已映射分区 ==="
+          echo "=== 分区列表 ==="
           ls -l /dev/mapper/
           sudo mount /dev/mapper/nbd0p1 "${{ env.ISTORE_MNT }}"
-          echo "=== 分区内所有文件 ==="
+          echo "=== 分区内文件列表 ==="
           ls -la "${{ env.ISTORE_MNT }}/"
+          echo "=== 检查启动文件 /sbin/init ==="
+          ls -la "${{ env.ISTORE_MNT }}/sbin/init"
 
-      # 提取 squashfs（根据上面日志自动适配）
-      - name: Extract squashfs
-        run: |
-          SQ_FILE="${{ env.ISTORE_MNT }}/root.squashfs"
-          if [ -f "$SQ_FILE" ]; then
-            sudo unsquashfs -f -d "${{ env.SQUASH_TMP }}" "$SQ_FILE"
-          else
-            echo "❌ 未找到 root.squashfs，请查看上方文件列表"
-            exit 1
-          fi
-          echo "=== 检查 /sbin/init ==="
-          ls -la "${{ env.SQUASH_TMP }}/sbin/init"
-
-      # 生成 1.5G ext4 镜像
-      - name: Create ext4 rootfs.img
+      - name: Create 1.5G ext4 rootfs.img
         run: |
           dd if=/dev/zero of="${{ env.OUT_IMG }}" bs=1M count=1536 status=none
           mkfs.ext4 -F "${{ env.OUT_IMG }}"
 
-      # 复制系统文件到 ext4 镜像
-      - name: Copy files to ext4
+      - name: Copy all files to ext4 image
         run: |
           sudo mount -o loop "${{ env.OUT_IMG }}" "${{ env.EXT4_MNT }}"
-          sudo cp -a "${{ env.SQUASH_TMP }}"/* "${{ env.EXT4_MNT }}/"
+          # 完整复制挂载分区内所有系统文件（含 /sbin/init）
+          sudo cp -a "${{ env.ISTORE_MNT }}"/* "${{ env.EXT4_MNT }}/"
 
-      # 强制清理，防止设备占用
-      - name: Cleanup
+      - name: Full cleanup
         if: always()
         run: |
           sudo umount "${{ env.EXT4_MNT }}" 2>/dev/null || true
@@ -108,8 +81,7 @@ jobs:
           sudo qemu-nbd -d /dev/nbd0 2>/dev/null || true
           sudo rmmod nbd 2>/dev/null || true
 
-      # 上传最终 rootfs.img
-      - name: Upload artifact
+      - name: Upload rootfs.img
         uses: actions/upload-artifact@v4
         with:
           name: istoreos-droid-rootfs-img
