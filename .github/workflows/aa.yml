@@ -53,14 +53,21 @@ jobs:
           sleep 3
           sudo kpartx -av /dev/nbd0
           sudo mount /dev/mapper/nbd0p2 "${{ env.SYS_MNT }}"
-          echo "=== 检查 /sbin/init ==="
+          echo "=== 检查 /sbin/init /run ==="
           ls -la "${{ env.SYS_MNT }}/sbin/init"
+          ls -ld "${{ env.SYS_MNT }}/run" || true
 
-      # 打包为标准 rootfs.tar.gz（保留权限、软链接）
-      - name: Package to tar.gz
+      # 补全缺失目录 + 标准打包（保留权限、软链接、设备文件）
+      - name: Fix dirs & Package to tar.gz
         run: |
           cd "${{ env.SYS_MNT }}"
-          sudo tar -zcvf ../rootfs.tar.gz .
+          # 强制创建 /run 目录，权限755
+          sudo mkdir -p run tmp/run
+          sudo chmod 755 run
+          # 修复原软链接 run -> /tmp/run
+          sudo ln -sf tmp/run run
+          # 完整打包：保留权限、所有者、软链接、特殊文件
+          sudo tar --preserve-permissions --preserve-order -zcvf ../rootfs.tar.gz .
 
       - name: Full cleanup
         if: always()
@@ -70,13 +77,13 @@ jobs:
           sudo qemu-nbd -d /dev/nbd0 2>/dev/null || true
           sudo rmmod nbd 2>/dev/null || true
 
-      # 上传 tar.gz 到 GitHub Release
+      # 上传到 Release
       - name: Upload to Release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           name: iStoreOS rootfs.tar.gz for Droidspaces
-          body: 标准 Linux 根文件系统 tar.gz 压缩包，适配 Droidspaces
+          body: 修复/run目录与软链接，适配Droidspaces正常启动
           files: |
             ./rootfs.tar.gz
           draft: false
