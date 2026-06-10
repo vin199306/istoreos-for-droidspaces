@@ -5,7 +5,7 @@ on:
     - cron: '0 0 * * 0'
 
 env:
-  TARGET_ARCH: arm64
+  TARGET_ARCH: aarch64
   ROOTFS_NAME: istoreos-rootfs-droidspaces-${{ github.run_id }}.tar.gz
   WORK_DIR: /tmp/istoreos-build
 
@@ -13,14 +13,16 @@ jobs:
   build-rootfs:
     runs-on: ubuntu-22.04
     steps:
-      - name: 安装依赖工具
+      - name: 安装依赖 & 注册跨架构执行
         run: |
           sudo apt update && sudo apt install -y \
             debootstrap qemu-user-static binfmt-support \
             tar gzip rsync wget curl sudo git \
             squashfs-tools fakeroot build-essential
+          # 强制注册 binfmt，确保跨架构可执行
+          sudo update-binfmts --enable qemu-${{ env.TARGET_ARCH }}
 
-      - name: 初始化rootfs基础目录
+      - name: 初始化 rootfs 目录
         run: |
           mkdir -p ${{ env.WORK_DIR }}/rootfs
           sudo debootstrap --arch=${{ env.TARGET_ARCH }} \
@@ -29,11 +31,14 @@ jobs:
             ${{ env.WORK_DIR }}/rootfs \
             http://deb.debian.org/debian
 
-      - name: 配置iStoreOS源与依赖
+      - name: 拷贝 qemu 静态二进制 + 完成引导
         run: |
+          # 修正文件名：aarch64 而非 arm64
           sudo cp /usr/bin/qemu-${{ env.TARGET_ARCH }}-static ${{ env.WORK_DIR }}/rootfs/usr/bin/
           sudo chroot ${{ env.WORK_DIR }}/rootfs /debootstrap/debootstrap --second-stage
 
+      - name: 添加 iStoreOS 源 & 安装组件
+        run: |
           sudo tee ${{ env.WORK_DIR }}/rootfs/etc/apt/sources.list.d/istoreos.list > /dev/null << EOF
           deb https://fw.koolcenter.com/binary/istoreos/ stable main
           EOF
@@ -47,7 +52,7 @@ jobs:
             rm -rf /var/lib/apt/lists/*;
           "
 
-      - name: 适配DroidSpaces环境
+      - name: 适配 DroidSpaces 容器环境
         run: |
           sudo mkdir -p ${{ env.WORK_DIR }}/rootfs/mnt/sdcard ${{ env.WORK_DIR }}/rootfs/dev ${{ env.WORK_DIR }}/rootfs/proc ${{ env.WORK_DIR }}/rootfs/sys
           sudo touch ${{ env.WORK_DIR }}/rootfs/etc/fstab
@@ -67,7 +72,7 @@ jobs:
 
           sudo mkdir -p ${{ env.WORK_DIR }}/rootfs/root/.ssh
           sudo tee ${{ env.WORK_DIR }}/rootfs/root/.ssh/authorized_keys > /dev/null << EOF
-          # 在此填入你的SSH公钥
+          # 填入你的 SSH 公钥
           EOF
           sudo chmod 700 ${{ env.WORK_DIR }}/rootfs/root/.ssh
           sudo chmod 600 ${{ env.WORK_DIR }}/rootfs/root/.ssh/authorized_keys
@@ -85,7 +90,7 @@ jobs:
                    -zcvf ../${{ env.ROOTFS_NAME }} .
           sudo chown $USER:$USER ../${{ env.ROOTFS_NAME }}
 
-      - name: 上传构建产物
+      - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
           name: istoreos-rootfs-droidspaces
