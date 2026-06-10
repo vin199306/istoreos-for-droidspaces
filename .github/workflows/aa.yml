@@ -71,11 +71,11 @@ jobs:
           sudo ln -sf tmp/run run
           sudo chmod 755 run tmp/run
 
-      # 打包为 tar.gz
+      # 打包：移除冲突参数，保留权限、软链接
       - name: Package to rootfs.tar.gz
         run: |
           cd "${{ env.RW_ROOT }}"
-          sudo tar --preserve-permissions --preserve-order -zcvf ../rootfs.tar.gz .
+          sudo tar --preserve-permissions -zcvf ../rootfs.tar.gz .
 
       # 统一清理设备与挂载
       - name: Full cleanup
@@ -92,7 +92,7 @@ jobs:
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           name: iStoreOS rootfs.tar.gz for Droidspaces
-          body: 已替换官方下载源，修复 /run 目录及软链接，适配 Droidspaces 正常启动
+          body: 官方源镜像，修复 /run 目录与软链接，适配 Droidspaces 启动
           files: |
             ./rootfs.tar.gz
           draft: false
