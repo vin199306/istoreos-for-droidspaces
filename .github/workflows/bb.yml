@@ -1,109 +1,108 @@
-name: Build iStoreOS ARM64 RootFS for Droidspaces
+name: Build iStoreOS Rootfs for DroidSpaces
 on:
-  workflow_dispatch:
-  push:
-    branches: [ main ]
+  workflow_dispatch: # 手动触发构建
+  schedule:
+    - cron: '0 0 * * 0' # 每周日自动构建
+
+env:
+  # 基础配置
+  TARGET_ARCH: arm64 # 适配droidspaces主流的ARM64，如需ARM32可改为armv7l
+  ROOTFS_NAME: istoreos-rootfs-droidspaces-${{ github.run_id }}.tar.gz
+  WORK_DIR: /tmp/istoreos-build
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      actions: read
-
+  build-rootfs:
+    runs-on: ubuntu-22.04
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Install Build Dependencies
+      - name: 安装依赖工具
         run: |
-          sudo apt update -y
-          sudo apt install -y qemu-utils gzip kpartx
-          sudo modprobe nbd max_part=16
+          sudo apt update && sudo apt install -y \
+            debootstrap qemu-user-static binfmt-support \
+            tar gzip rsync wget curl sudo git \
+            squashfs-tools fakeroot build-essential
 
-      - name: Set Env Variables
+      - name: 初始化rootfs基础目录
         run: |
-          # 原项目官方镜像地址
-          echo "IMG_URL=https://dl.istoreos.com/iStoreOS/armsr/istoreos-24.10.7-2026060510-armsr-squashfs-combined-efi.img.gz" >> $GITHUB_ENV
-          echo "IMG_GZ=istoreos.img.gz" >> $GITHUB_ENV
-          echo "IMG_RAW=istoreos.img" >> $GITHUB_ENV
-          echo "SYS_MNT=./sys_mnt" >> $GITHUB_ENV
-          echo "RW_ROOT=./rootfs_work" >> $GITHUB_ENV
-          echo "OUT_TAR=rootfs.tar.gz" >> $GITHUB_ENV
-          echo "RELEASE_TAG=latest" >> $GITHUB_ENV
+          # 创建构建目录
+          mkdir -p ${{ env.WORK_DIR }}/rootfs
+          # 基于Debian sid构建基础根文件系统（iStoreOS基于OpenWrt/Lean源码，兼容Debian基础）
+          sudo debootstrap --arch=${{ env.TARGET_ARCH }} \
+            --foreign \
+            sid \
+            ${{ env.WORK_DIR }}/rootfs \
+            http://deb.debian.org/debian
 
-      - name: Create Working Directories
+      - name: 配置iStoreOS源与依赖
         run: |
-          mkdir -p ${{ env.SYS_MNT }} ${{ env.RW_ROOT }}
+          # 复制qemu静态二进制文件，支持跨架构构建
+          sudo cp /usr/bin/qemu-${{ env.TARGET_ARCH }}-static ${{ env.WORK_DIR }}/rootfs/usr/bin/
+          # 完成debootstrap第二阶段
+          sudo chroot ${{ env.WORK_DIR }}/rootfs /debootstrap/debootstrap --second-stage
 
-      - name: Download iStoreOS Image (Follow iStoreOS-ARM Project)
+          # 添加iStoreOS官方源
+          sudo tee ${{ env.WORK_DIR }}/rootfs/etc/apt/sources.list.d/istoreos.list > /dev/null << EOF
+          deb https://fw.koolcenter.com/binary/istoreos/ stable main
+          EOF
+
+          # 更新源并安装iStoreOS核心组件
+          sudo chroot ${{ env.WORK_DIR }}/rootfs /bin/bash -c "
+            apt update && apt install -y --no-install-recommends \
+              istoreos-core istoreos-webui istoreos-utils \
+              openssh-server iproute2 dhcpcd5 iptables \
+              kmod mount util-linux procps nginx;
+            apt clean;
+            rm -rf /var/lib/apt/lists/*;
+          "
+
+      - name: 适配DroidSpaces环境
         run: |
-          if [ -f "${{ env.IMG_GZ }}" ]; then
-            echo "✅ Local image exists, skip download"
-          else
-            echo "🔽 Download official iStoreOS arm64 image"
-            wget -c --tries=3 --timeout=15 "${{ env.IMG_URL }}" -O "${{ env.IMG_GZ }}"
-          fi
+          # 1. 修复DroidSpaces下的权限与挂载问题
+          sudo mkdir -p ${{ env.WORK_DIR }}/rootfs/mnt/sdcard ${{ env.WORK_DIR }}/rootfs/dev ${{ env.WORK_DIR }}/rootfs/proc ${{ env.WORK_DIR }}/rootfs/sys
+          sudo touch ${{ env.WORK_DIR }}/rootfs/etc/fstab
+          sudo tee -a ${{ env.WORK_DIR }}/rootfs/etc/fstab > /dev/null << EOF
+          proc /proc proc defaults 0 0
+          sysfs /sys sysfs defaults 0 0
+          tmpfs /tmp tmpfs defaults 0 0
+          /dev/block/mmcblk0p1 /mnt/sdcard vfat defaults 0 0
+          EOF
 
-      - name: Decompress Image
+          # 2. 禁用不必要的服务，适配Android容器化
+          sudo chroot ${{ env.WORK_DIR }}/rootfs /bin/bash -c "
+            systemctl disable systemd-resolved.service;
+            systemctl disable NetworkManager.service;
+            systemctl enable ssh.service;
+            systemctl enable nginx.service;
+          "
+
+          # 3. 配置SSH免密（可选，根据droidspaces需求）
+          sudo mkdir -p ${{ env.WORK_DIR }}/rootfs/root/.ssh
+          sudo tee ${{ env.WORK_DIR }}/rootfs/root/.ssh/authorized_keys > /dev/null << EOF
+          # 替换为你的公钥
+          ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQ...
+          EOF
+          sudo chmod 700 ${{ env.WORK_DIR }}/rootfs/root/.ssh
+          sudo chmod 600 ${{ env.WORK_DIR }}/rootfs/root/.ssh/authorized_keys
+
+          # 4. 调整iStoreOS默认配置，适配droidspaces网络
+          sudo sed -i 's/192.168.1.1/192.168.43.1/g' ${{ env.WORK_DIR }}/rootfs/etc/config/network
+          sudo sed -i 's/option disabled 1/option disabled 0/g' ${{ env.WORK_DIR }}/rootfs/etc/config/network
+
+      - name: 打包rootfs为tar.gz
         run: |
-          zcat "${{ env.IMG_GZ }}" > "${{ env.IMG_RAW }}" || true
+          # 进入rootfs目录，打包（排除临时文件和无用目录）
+          cd ${{ env.WORK_DIR }}/rootfs
+          sudo tar --exclude='./dev/*' \
+                   --exclude='./proc/*' \
+                   --exclude='./sys/*' \
+                   --exclude='./tmp/*' \
+                   -zcvf ../${{ env.ROOTFS_NAME }} .
 
-      - name: Mount System Partition (nbd0p2 = RootFS, same as reference project)
-        run: |
-          sudo qemu-nbd -f raw -c /dev/nbd0 "${{ env.IMG_RAW }}"
-          sleep 3
-          sudo kpartx -av /dev/nbd0
-          # 根文件系统固定为 nbd0p2（参考仓库分区结构）
-          sudo mount /dev/mapper/nbd0p2 "${{ env.SYS_MNT }}"
-          echo "✅ Check /sbin/init:"
-          ls -lh "${{ env.SYS_MNT }}/sbin/init"
+          # 修正权限
+          sudo chown $USER:$USER ../${{ env.ROOTFS_NAME }}
 
-      - name: Copy RootFS to Writable Directory
-        run: |
-          sudo cp -a "${{ env.SYS_MNT }}"/* "${{ env.RW_ROOT }}/"
-
-      - name: Fix Droidspaces Required Paths & Symlink
-        run: |
-          cd "${{ env.RW_ROOT }}"
-          # 1. 还原原生 run -> tmp/run 软链接（和原 iStoreOS 保持一致）
-          sudo mkdir -p tmp/run
-          sudo rm -f run
-          sudo ln -sf tmp/run run
-          # 2. 补齐 Droidspaces 必需目录
-          sudo mkdir -p tmp/run/droidspaces/vproc
-          # 3. 补齐环境文件
-          sudo touch tmp/run/droidspaces.env
-          # 4. 统一权限，保证容器可读写
-          sudo chmod -R 755 tmp/run
-          sudo chmod 644 tmp/run/droidspaces.env
-
-      - name: Package to Standard rootfs.tar.gz
-        run: |
-          cd "${{ env.RW_ROOT }}"
-          # 保留权限、软链接，标准 Linux rootfs 打包格式
-          sudo tar --preserve-permissions -zcvf ../${{ env.OUT_TAR }} .
-
-      - name: Cleanup Devices & Mounts
-        if: always()
-        run: |
-          sudo umount "${{ env.SYS_MNT }}" 2>/dev/null || true
-          sudo kpartx -dv /dev/nbd0 2>/dev/null || true
-          sudo qemu-nbd -d /dev/nbd0 2>/dev/null || true
-          sudo rmmod nbd 2>/dev/null || true
-
-      - name: Upload to GitHub Release
-        uses: softprops/action-gh-release@v1
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v3
         with:
-          tag_name: ${{ env.RELEASE_TAG }}
-          name: iStoreOS ARM64 RootFS (For Droidspaces)
-          body: |
-            基于 [Arthur97172/iStoreOS-ARM](https://github.com/Arthur97172/iStoreOS-ARM) 官方镜像构建
-            适配 Droidspaces v6.2.5，已补齐 /run 目录、软链接及运行依赖
-            格式：标准 rootfs.tar.gz
-          files: |
-            ./rootfs.tar.gz
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: istoreos-rootfs-droidspaces
+          path: ${{ env.WORK_DIR }}/${{ env.ROOTFS_NAME }}
+          retention-days: 30 # 产物保留30天
