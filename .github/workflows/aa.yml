@@ -24,7 +24,7 @@ jobs:
 
       - name: Set environment variables
         run: |
-          echo "IMG_URL=https://fw.d4ctech.com/iStoreOS/armsr/istoreos-24.10.7-2026060510-armsr-squashfs-combined-efi.img.gz" >> $GITHUB_ENV
+          echo "IMG_URL=https://fw20.koolcenter.com/iStoreOS/armsr/istoreos-24.10.7-2026060510-armsr-squashfs-combined-efi.img.gz" >> $GITHUB_ENV
           echo "IMG_GZ=istoreos.img.gz" >> $GITHUB_ENV
           echo "IMG_RAW=istoreos.img" >> $GITHUB_ENV
           echo "ISTORE_MNT=./istore_mnt" >> $GITHUB_ENV
@@ -55,7 +55,8 @@ jobs:
           sudo kpartx -av /dev/nbd0
           echo "=== 分区列表 ==="
           ls -l /dev/mapper/
-          sudo mount /dev/mapper/nbd0p1 "${{ env.ISTORE_MNT }}"
+          # 核心修正：挂载 nbd0p3 系统分区，而非 nbd0p1
+          sudo mount /dev/mapper/nbd0p3 "${{ env.ISTORE_MNT }}"
           echo "=== 分区内文件列表 ==="
           ls -la "${{ env.ISTORE_MNT }}/"
           echo "=== 检查启动文件 /sbin/init ==="
@@ -69,7 +70,6 @@ jobs:
       - name: Copy all files to ext4 image
         run: |
           sudo mount -o loop "${{ env.OUT_IMG }}" "${{ env.EXT4_MNT }}"
-          # 完整复制挂载分区内所有系统文件（含 /sbin/init）
           sudo cp -a "${{ env.ISTORE_MNT }}"/* "${{ env.EXT4_MNT }}/"
 
       - name: Full cleanup
