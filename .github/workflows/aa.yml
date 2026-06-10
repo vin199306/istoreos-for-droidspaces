@@ -62,16 +62,20 @@ jobs:
         run: |
           sudo cp -a "${{ env.SYS_MNT }}"/* "${{ env.RW_ROOT }}/"
 
-      # 修复 /run 目录与软链接
-      - name: Fix /run dir & symlink
+      # 完整修复 run 相关目录、软链接、droidspaces 子目录
+      - name: Fix run dir & droidspaces subdirs
         run: |
           cd "${{ env.RW_ROOT }}"
+          # 基础目录
           sudo mkdir -p tmp/run
           sudo rm -f run
           sudo ln -sf tmp/run run
-          sudo chmod 755 run tmp/run
+          # 补充 Droidspaces 必需目录
+          sudo mkdir -p run/droidspaces/vproc
+          # 设置合理权限
+          sudo chmod 755 run tmp/run run/droidspaces run/droidspaces/vproc
 
-      # 打包：移除冲突参数，保留权限、软链接
+      # 打包（保留权限、软链接）
       - name: Package to rootfs.tar.gz
         run: |
           cd "${{ env.RW_ROOT }}"
@@ -92,7 +96,7 @@ jobs:
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           name: iStoreOS rootfs.tar.gz for Droidspaces
-          body: 官方源镜像，修复 /run 目录与软链接，适配 Droidspaces 启动
+          body: 补齐 /run/droidspaces/vproc 目录，修复 Droidspaces 启动依赖
           files: |
             ./rootfs.tar.gz
           draft: false
