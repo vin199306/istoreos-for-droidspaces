@@ -29,7 +29,8 @@ jobs:
           echo "SQUASH_TMP=${{ github.workspace }}/squashfs_root" >> $GITHUB_ENV
           echo "EXT4_IMG=${{ github.workspace }}/rootfs.img" >> $GITHUB_ENV
           echo "EXT4_MNT=${{ github.workspace }}/ext4_mnt" >> $GITHUB_ENV
-          echo "ISTORE_MNT=/mnt/istoreos" >> $GITHUB_ENV
+          # 改用仓库工作区内目录，规避 /mnt 权限问题
+          echo "ISTORE_MNT=${{ github.workspace }}/istore_mnt" >> $GITHUB_ENV
 
       - name: Create directories
         run: |
@@ -38,7 +39,6 @@ jobs:
           mkdir -p "${{ env.EXT4_MNT }}"
           mkdir -p "${{ env.ISTORE_MNT }}"
 
-      # 修复：去掉 hashText，直接用 URL 组成 key
       - name: Cache firmware archive
         uses: actions/cache@v4
         with:
