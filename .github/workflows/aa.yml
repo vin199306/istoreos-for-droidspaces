@@ -1,0 +1,78 @@
+name: Build iStoreOS arm64 rootfs
+
+# 触发方式：手动点击运行 / 推送代码触发
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y qemu-utils gzip kpartx
+          sudo modprobe nbd max_part=16
+
+      - name: Create work dir
+        run: |
+          mkdir -p /opt/istoreos-work
+          cd /opt/istoreos-work
+
+      - name: Download iStoreOS official arm64 image
+        run: |
+          cd /opt/istoreos-work
+          # 替换为你需要的 iStoreOS arm64 镜像直链
+          IMG_URL="https://fw.koolcenter.com/iStoreOS/arm64/istoreos-23.05.4-arm64-squashfs.img.gz"
+          wget -c "${IMG_URL}" -O istoreos.img.gz
+
+      - name: Decompress image
+        run: |
+          cd /opt/istoreos-work
+          gzip -d istoreos.img.gz
+          ls -lh
+
+      - name: Map image to NBD device
+        run: |
+          cd /opt/istoreos-work
+          sudo qemu-nbd -c /dev/nbd0 istoreos.img
+          sleep 2
+          sudo kpartx -av /dev/nbd0
+
+      - name: Mount root partition
+        run: |
+          sudo mkdir -p /mnt/istoreos
+          # iStoreOS 标准分区为 nbd0p1
+          sudo mount /dev/mapper/nbd0p1 /mnt/istoreos
+
+      - name: Package rootfs.tar.gz (exclude virtual dirs)
+        run: |
+          cd /mnt/istoreos
+          sudo tar --create --gzip \
+            --exclude='dev/*' \
+            --exclude='proc/*' \
+            --exclude='sys/*' \
+            --exclude='tmp/*' \
+            --exclude='run/*' \
+            --exclude='lost+found' \
+            -f /opt/istoreos-work/istoreos-arm64-rootfs.tar.gz .
+          ls -lh /opt/istoreos-work/
+
+      - name: Unmount & cleanup NBD
+        run: |
+          sudo umount /mnt/istoreos
+          sudo kpartx -dv /dev/nbd0
+          sudo qemu-nbd -d /dev/nbd0
+          sudo rmmod nbd || true
+
+      - name: Upload rootfs as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: istoreos-arm64-rootfs
+          path: /opt/istoreos-work/istoreos-arm64-rootfs.tar.gz
+          retention-days: 30
